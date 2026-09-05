@@ -38,6 +38,9 @@ constexpr const char kDisplayName[] = "Matter";
 constexpr const char kCommissionAction[] = "commission";
 constexpr const char kPairingCodeField[] = "pairingCode";
 constexpr const char kRemoveAction[] = "remove";
+constexpr const char kShareAction[] = "share";
+constexpr const char kShareDeviceField[] = "shareDevice";
+constexpr std::uint16_t kShareWindowSeconds = 300;
 constexpr const char kRemoveDeviceField[] = "removeDevice";
 constexpr const char kAllowUntrustedField[] = "allowUntrustedAttestation";
 constexpr const char kListenPortField[] = "listenPort";
@@ -631,6 +634,10 @@ protected:
             removeAction(request, std::move(resp));
             return;
         }
+        if (request.actionId == kShareAction) {
+            shareAction(request, std::move(resp));
+            return;
+        }
         if (request.actionId != kCommissionAction) {
             resp.status = v1::CmdStatus::NotSupported;
             resp.error = "Unsupported action";
@@ -701,29 +708,66 @@ private:
         m_listenPort = (port > 0 && port < 65536) ? static_cast<std::uint16_t>(port) : 0;
     }
 
-    void removeAction(const phi::AdapterActionInvokeRequest &request, v1::ActionResponse resp)
+    // Resolves the node a form names, answering the request when it cannot.
+    bool nodeFromForm(const phi::AdapterActionInvokeRequest &request, const char *field, v1::ActionResponse &resp,
+                      std::uint64_t *nodeId)
     {
         const Json::Value params = parseObject(request.paramsJson);
-        std::uint64_t nodeId = 0;
-        if (!parseNodeReference(params.get(kRemoveDeviceField, "").asString(), &nodeId)) {
+        if (!parseNodeReference(params.get(field, "").asString(), nodeId)) {
             resp.status = v1::CmdStatus::InvalidArgument;
-            resp.error = "Name the node to remove: its id (0x1) or one of its devices (n1-e3)";
+            resp.error = "Name the node: its id (0x1) or one of its devices (n1-e3)";
             submitAction(std::move(resp));
-            return;
+            return false;
         }
         if (!m_started) {
             resp.status = v1::CmdStatus::TemporarilyOffline;
             resp.error = "Matter stack is not running";
             submitAction(std::move(resp));
-            return;
+            return false;
         }
         const auto known = m_controller.nodes();
-        if (std::find(known.begin(), known.end(), nodeId) == known.end()) {
+        if (std::find(known.begin(), known.end(), *nodeId) == known.end()) {
             resp.status = v1::CmdStatus::InvalidArgument;
-            resp.error = "Node " + nodeText(nodeId) + " is not in this fabric";
+            resp.error = "Node " + nodeText(*nodeId) + " is not in this fabric";
             submitAction(std::move(resp));
-            return;
+            return false;
         }
+        return true;
+    }
+
+    void shareAction(const phi::AdapterActionInvokeRequest &request, v1::ActionResponse resp)
+    {
+        std::uint64_t nodeId = 0;
+        if (!nodeFromForm(request, kShareDeviceField, resp, &nodeId))
+            return;
+        const phi::CmdId cmdId = request.cmdId;
+        m_controller.share(nodeId, kShareWindowSeconds, [this, cmdId, nodeId](const std::string &manual, const std::string &qr, CHIP_ERROR err) {
+            v1::ActionResponse done;
+            done.id = cmdId;
+            done.tsMs = nowMs();
+            if (err != CHIP_NO_ERROR) {
+                done.status = v1::CmdStatus::Failure;
+                done.error = "Could not open the commissioning window on node " + nodeText(nodeId) + ": " + phimatter::errorText(err);
+                submitAction(std::move(done));
+                return;
+            }
+            done.status = v1::CmdStatus::Success;
+            done.resultType = v1::ActionResultType::String;
+            std::string text = "Node " + nodeText(nodeId) + " is open for " + std::to_string(kShareWindowSeconds / 60)
+                + " minutes. Pairing code for the other app: " + manual;
+            if (!qr.empty())
+                text += " (QR payload " + qr + ")";
+            done.resultValue = v1::ScalarValue(text);
+            done.formValuesJson = std::string("{\"") + kShareDeviceField + "\":\"\"}";
+            submitAction(std::move(done));
+        });
+    }
+
+    void removeAction(const phi::AdapterActionInvokeRequest &request, v1::ActionResponse resp)
+    {
+        std::uint64_t nodeId = 0;
+        if (!nodeFromForm(request, kRemoveDeviceField, resp, &nodeId))
+            return;
         const phi::CmdId cmdId = request.cmdId;
         m_controller.remove(nodeId, [this, cmdId, nodeId](CHIP_ERROR err) {
             for (const std::string &device : devicesOf(nodeId)) {
@@ -1104,6 +1148,14 @@ protected:
         commission.metaJson = R"({"placement":"card","kind":"open_dialog","requiresAck":true})";
         caps.instanceActions.push_back(commission);
 
+        v1::AdapterActionDescriptor share;
+        share.id = kShareAction;
+        share.label = "Share with another app";
+        share.description = "Opens the device for Apple Home, Google Home or the maker's app for five minutes and shows the code to enter there.";
+        share.hasForm = true;
+        share.metaJson = R"({"placement":"card","kind":"open_dialog","requiresAck":true})";
+        caps.instanceActions.push_back(share);
+
         v1::AdapterActionDescriptor remove;
         remove.id = kRemoveAction;
         remove.label = "Remove device";
@@ -1131,6 +1183,7 @@ protected:
                 "layout":{"gridUnits":24,"gutter":[12,8],"defaults":{"span":{"xs":24,"sm":24,"md":12,"lg":12,"xl":12,"xxl":12},"labelPosition":"top","labelSpan":8,"controlSpan":16,"actionPosition":"inline","actionSpan":6}},
                 "fields":[
                     {"key":"pairingCode","type":"String","label":"Pairing code","description":"The code printed on the device or shown by its maker's app (Hue: Settings, Smart home, Matter). Either the 11-digit manual code or the text behind the QR code.","placeholder":"MT:... or 3497-011-2332","flags":["Required","Transient"],"parentActionId":"commission"},
+                    {"key":"shareDevice","type":"String","label":"Device to share","description":"The node id shown in a device's details (0x1), or the id of one of its devices (n1-e3). The other app then adds the device with the code this shows; it stays in this fabric too.","placeholder":"0x1 or n1-e3","flags":["Required","Transient"],"parentActionId":"share"},
                     {"key":"removeDevice","type":"String","label":"Device to remove","description":"The node id shown in a device's details (0x1), or the id of one of its devices (n1-e3). A bridge goes with everything behind it.","placeholder":"0x1 or n1-e3","flags":["Required","Transient"],"parentActionId":"remove"},
                     {"key":"allowUntrustedAttestation","type":"Boolean","label":"Allow uncertified devices","description":"Continue commissioning when the device's attestation certificate is not signed by a known Matter PAA. Needed for sample apps and development boards.","default":false},
                     {"key":"listenPort","type":"Int","label":"UDP port","description":"The port this controller answers on. Matter's default is 5540; a second core on the same host needs another one. Takes effect when the instance restarts.","default":5540,"min":1024,"max":65535}

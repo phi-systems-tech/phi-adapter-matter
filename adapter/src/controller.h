@@ -118,6 +118,12 @@ public:
     void setHueSaturation(std::uint64_t nodeId, std::uint16_t endpoint, std::uint8_t hue, std::uint8_t saturation,
                           std::function<void(CHIP_ERROR)> done);
 
+    // Opens the device's commissioning window for another ecosystem: a fresh
+    // passcode and discriminator, valid for the given seconds (180..900).
+    // Delivers the manual pairing code and the QR payload to enter there.
+    void share(std::uint64_t nodeId, std::uint16_t timeoutSeconds,
+               std::function<void(const std::string &manualCode, const std::string &qrCode, CHIP_ERROR)> done);
+
     // Removes this fabric from the device and forgets the node. The node is
     // forgotten either way; the error says whether the device took part.
     // A device that did not answer keeps the fabric until it is reset.

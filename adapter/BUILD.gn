@@ -37,6 +37,7 @@ executable("phi_adapter_matter_ipc") {
     "${chip_root}/src/lib",
     "${chip_root}/src/platform",
     "${chip_root}/src/platform/logging:stdio",
+    "${chip_root}/src/setup_payload",
     "${chip_root}/third_party/inipp",
     "${chip_root}/third_party/jsoncpp",
   ]

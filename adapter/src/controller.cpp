@@ -1,6 +1,9 @@
 #include "controller.h"
 
+#include <controller/CommissioningWindowOpener.h>
 #include <controller/CurrentFabricRemover.h>
+#include <setup_payload/ManualSetupPayloadGenerator.h>
+#include <setup_payload/QRCodeSetupPayloadGenerator.h>
 
 #include <atomic>
 #include <chrono>
@@ -66,6 +69,8 @@ constexpr std::uint16_t kSubscribeMaxIntervalSeconds = 300;
 // asked to; a device whose window is shut never answers, and without a
 // deadline the attempt would sit there and block the next one.
 constexpr std::uint32_t kCommissioningDeadlineSeconds = 90;
+// PBKDF iterations for the window's PASE verifier; the spec allows 1000..100000.
+constexpr std::uint32_t kSpake2pIterations = 1000;
 
 std::string toHex(const std::uint8_t *data, std::size_t size)
 {
@@ -1174,6 +1179,70 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
             [shared](CHIP_ERROR err) { (*shared)(err); });
     }
 
+    // ---- sharing ------------------------------------------------------
+
+    struct Share {
+        Impl *self = nullptr;
+        std::uint64_t nodeId = 0;
+        std::function<void(const std::string &, const std::string &, CHIP_ERROR)> done;
+        std::unique_ptr<CommissioningWindowOpener> opener;
+        Callback::Callback<OnOpenCommissioningWindow> callback;
+
+        Share() : callback(&Share::onOpened, this) {}
+
+        static void onOpened(void *context, NodeId, CHIP_ERROR status, SetupPayload payload)
+        {
+            auto *job = static_cast<Share *>(context);
+            std::string manual;
+            std::string qr;
+            if (status == CHIP_NO_ERROR) {
+                status = ManualSetupPayloadGenerator(payload).payloadDecimalStringRepresentation(manual);
+                // The QR payload wants vendor and product ids; a device that
+                // did not give them leaves us with the manual code alone.
+                if (status == CHIP_NO_ERROR && QRCodeSetupPayloadGenerator(payload).payloadBase38Representation(qr) != CHIP_NO_ERROR)
+                    qr.clear();
+            }
+            auto finish = std::move(job->done);
+            job->self->post([job] { delete job; });
+            if (finish)
+                finish(manual, qr, status);
+        }
+    };
+
+    void share(std::uint64_t nodeId, std::uint16_t timeoutSeconds,
+               std::function<void(const std::string &, const std::string &, CHIP_ERROR)> done)
+    {
+        auto *job = new Share();
+        job->self = this;
+        job->nodeId = nodeId;
+        job->done = std::move(done);
+        job->opener = std::make_unique<CommissioningWindowOpener>(commissioner.get());
+
+        std::uint16_t discriminator = 0;
+        (void)Crypto::DRBG_get_bytes(reinterpret_cast<std::uint8_t *>(&discriminator), sizeof(discriminator));
+        discriminator &= 0x0FFF;
+
+        char text[96];
+        std::snprintf(text, sizeof(text), "node 0x%016llx: opening a commissioning window for %u s",
+                      static_cast<unsigned long long>(nodeId), static_cast<unsigned>(timeoutSeconds));
+        log(LogLevel::Info, text);
+
+        SetupPayload payload;
+        const CHIP_ERROR err = job->opener->OpenCommissioningWindow(CommissioningWindowPasscodeParams()
+                                                                        .SetNodeId(nodeId)
+                                                                        .SetTimeout(timeoutSeconds)
+                                                                        .SetIteration(kSpake2pIterations)
+                                                                        .SetDiscriminator(discriminator)
+                                                                        .SetReadVIDPIDAttributes(true)
+                                                                        .SetCallback(&job->callback),
+                                                                    payload);
+        if (err != CHIP_NO_ERROR) {
+            std::unique_ptr<Share> owned(job);
+            if (owned->done)
+                owned->done({}, {}, err);
+        }
+    }
+
     // ---- removal ------------------------------------------------------
 
     struct Removal {
@@ -1337,6 +1406,15 @@ void Controller::setHueSaturation(std::uint64_t nodeId, std::uint16_t endpoint, 
     Impl *impl = m_impl.get();
     impl->post([impl, nodeId, endpoint, hue, saturation, done = std::move(done)]() mutable {
         impl->setHueSaturation(nodeId, endpoint, hue, saturation, std::move(done));
+    });
+}
+
+void Controller::share(std::uint64_t nodeId, std::uint16_t timeoutSeconds,
+                       std::function<void(const std::string &, const std::string &, CHIP_ERROR)> done)
+{
+    Impl *impl = m_impl.get();
+    impl->post([impl, nodeId, timeoutSeconds, done = std::move(done)]() mutable {
+        impl->share(nodeId, timeoutSeconds, std::move(done));
     });
 }
 
