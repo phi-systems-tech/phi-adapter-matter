@@ -50,6 +50,9 @@ struct Options {
     std::string paaTrustStoreDir;
     // Continue commissioning when device attestation fails.
     bool allowUntrustedAttestation = false;
+    // The label this fabric carries on every device, what other admins see
+    // in a device's fabric list ("Apple Home", "Tuya"). At most 32 bytes.
+    std::string fabricLabel;
     // UDP port the controller listens on; 0 means the Matter default (5540).
     // Two cores on one host need two ports.
     std::uint16_t listenPort = 0;
@@ -92,6 +95,12 @@ public:
 
     // Node ids known to this fabric, from the registry.
     std::vector<std::uint64_t> nodes() const;
+    // The compressed fabric id as 16 hex digits, the fabric's public name.
+    std::string compressedFabricId() const;
+
+    // Writes the fabric label to the node (Operational Credentials,
+    // UpdateFabricLabel). Done after commissioning and whenever it changes.
+    void setFabricLabel(std::uint64_t nodeId, const std::string &label, std::function<void(CHIP_ERROR)> done);
 
     // Commissions the device behind a setup code (an "MT:..." QR payload or a
     // manual pairing code) over the network. One at a time.

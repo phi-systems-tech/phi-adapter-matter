@@ -41,6 +41,7 @@ constexpr const char kRemoveAction[] = "remove";
 constexpr const char kShareAction[] = "share";
 constexpr const char kShareDeviceField[] = "shareDevice";
 constexpr std::uint16_t kShareWindowSeconds = 300;
+constexpr const char kDefaultFabricLabel[] = "phi";
 constexpr const char kRemoveDeviceField[] = "removeDevice";
 constexpr const char kAllowUntrustedField[] = "allowUntrustedAttestation";
 constexpr const char kListenPortField[] = "listenPort";
@@ -460,6 +461,7 @@ protected:
             options.paaTrustStoreDir = env;
         options.allowUntrustedAttestation = m_allowUntrusted;
         options.listenPort = m_listenPort;
+        options.fabricLabel = m_fabricLabel;
 
         phimatter::Callbacks callbacks;
         callbacks.log = [this](phimatter::LogLevel level, const std::string &message) {
@@ -507,6 +509,9 @@ protected:
         m_started = true;
 
         sendConnectionStateChanged(true);
+        // The configuration may arrive after start; the label waits for it.
+        if (hasConfig())
+            publishFabric();
         for (const std::uint64_t nodeId : m_controller.nodes())
             adoptNode(nodeId);
         return true;
@@ -522,9 +527,19 @@ protected:
 
     void onConfigChanged(const phi::ConfigChangedRequest &) override
     {
+        const std::string labelBefore = m_fabricLabel;
         applyConfig();
-        if (m_started)
-            m_controller.setAllowUntrustedAttestation(m_allowUntrusted);
+        if (!m_started)
+            return;
+        m_controller.setAllowUntrustedAttestation(m_allowUntrusted);
+        if (!m_nodesLabeled || m_fabricLabel != labelBefore) {
+            // First configuration, or the instance was renamed: the devices
+            // learn the label too.
+            publishFabric();
+            for (const std::uint64_t nodeId : m_controller.nodes())
+                labelNode(nodeId);
+            m_nodesLabeled = true;
+        }
     }
 
     void onChannelInvoke(const phi::ChannelInvokeRequest &request) override
@@ -704,6 +719,8 @@ private:
             return;
         const Json::Value meta = parseObject(config().adapter.metaJson);
         m_allowUntrusted = meta.get(kAllowUntrustedField, false).asBool();
+        const std::string name = trimmed(config().adapter.name);
+        m_fabricLabel = name.empty() ? kDefaultFabricLabel : name.substr(0, 32);
         const int port = meta.get(kListenPortField, 0).asInt();
         m_listenPort = (port > 0 && port < 65536) ? static_cast<std::uint16_t>(port) : 0;
     }
@@ -915,11 +932,44 @@ private:
         return channel;
     }
 
-    // Reads a node's structure and publishes every OnOff-serving endpoint as
-    // a device, then subscribes.
+    // The fabric's public face on the instance card: its label and its
+    // compressed id, which is how a device's fabric list names it.
+    void publishFabric()
+    {
+        const std::string host = "Fabric " + m_fabricLabel + " (" + m_controller.compressedFabricId() + ")";
+        std::string error;
+        if (!sendAdapterMetaUpdated(std::string("{\"host\":") + jsonQuoted(host) + "}", &error)) {
+            log(phi::LogLevel::Warn, phi::LogCategory::Internal, "Fabric line not published: %1", phi::ScalarList{error},
+                "matter.fabric.publish.failed");
+        }
+    }
+
+    void labelNode(std::uint64_t nodeId)
+    {
+        const std::string label = m_fabricLabel;
+        m_controller.setFabricLabel(nodeId, label, [this, nodeId, label](CHIP_ERROR err) {
+            char text[128];
+            if (err == CHIP_NO_ERROR) {
+                std::snprintf(text, sizeof(text), "node 0x%llx: fabric label \"%s\" set",
+                              static_cast<unsigned long long>(nodeId), label.c_str());
+                log(phi::LogLevel::Info, phi::LogCategory::Device, text, {}, "matter.node.label");
+            } else {
+                std::snprintf(text, sizeof(text), "node 0x%llx: fabric label not set: %s",
+                              static_cast<unsigned long long>(nodeId), phimatter::errorText(err));
+                log(phi::LogLevel::Warn, phi::LogCategory::Device, text, {}, "matter.node.label.failed");
+            }
+        });
+    }
+
+    // Reads a node's structure and publishes what it carries as devices,
+    // subscribes, and makes sure the node knows this fabric's label.
     void adoptNode(std::uint64_t nodeId)
     {
         describeAndPublish(nodeId, true);
+        if (hasConfig()) {
+            labelNode(nodeId);
+            m_nodesLabeled = true;
+        }
     }
 
     void describeAndPublish(std::uint64_t nodeId, bool subscribe = false)
@@ -1157,6 +1207,8 @@ private:
     std::map<std::uint64_t, std::set<std::string>> m_devicesByNode;
     std::map<std::uint64_t, std::string> m_nodeNames;
     std::uint16_t m_listenPort = 0;
+    std::string m_fabricLabel = kDefaultFabricLabel;
+    bool m_nodesLabeled = false;
     bool m_started = false;
     bool m_allowUntrusted = false;
 };

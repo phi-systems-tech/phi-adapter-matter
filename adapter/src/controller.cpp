@@ -194,6 +194,7 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
     std::map<std::uint64_t, NodeRecord> registry;
     std::uint64_t nextNodeId = 1;
     std::uint8_t ipk[Crypto::CHIP_CRYPTO_SYMMETRIC_KEY_LENGTH_BYTES];
+    std::string compressedFabricIdHex;
 
     // Commissioning in flight. Matter thread only.
     struct Commissioning {
@@ -478,6 +479,7 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
         err = Credentials::SetSingleIpkEpochKey(&groupDataProvider, fabricIndex, ByteSpan(ipk), compressedSpan);
         if (err != CHIP_NO_ERROR)
             return fail("fabric IPK", err);
+        compressedFabricIdHex = toHex(compressedFabricId, sizeof(compressedFabricId));
 
         s_logTarget = this;
         Logging::SetLogRedirectCallback(&Impl::logRedirect);
@@ -1179,6 +1181,27 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
             [shared](CHIP_ERROR err) { (*shared)(err); });
     }
 
+    void setFabricLabel(std::uint64_t nodeId, const std::string &label, std::function<void(CHIP_ERROR)> done)
+    {
+        auto shared = std::make_shared<std::function<void(CHIP_ERROR)>>(std::move(done));
+        auto text = std::make_shared<std::string>(label.substr(0, 32));
+        withSession(nodeId,
+            [text, shared](Messaging::ExchangeManager &exchangeMgr, const SessionHandle &session) {
+                using namespace chip::app::Clusters;
+                auto onSuccess = [shared](const ConcreteCommandPath &, const StatusIB &,
+                                          const OperationalCredentials::Commands::NOCResponse::DecodableType &) {
+                    (*shared)(CHIP_NO_ERROR);
+                };
+                auto onError = [shared](CHIP_ERROR err) { (*shared)(err); };
+                OperationalCredentials::Commands::UpdateFabricLabel::Type command;
+                command.label = CharSpan(text->data(), text->size());
+                const CHIP_ERROR err = InvokeCommandRequest(&exchangeMgr, session, 0, command, onSuccess, onError);
+                if (err != CHIP_NO_ERROR)
+                    (*shared)(err);
+            },
+            [shared](CHIP_ERROR err) { (*shared)(err); });
+    }
+
     // ---- sharing ------------------------------------------------------
 
     struct Share {
@@ -1406,6 +1429,19 @@ void Controller::setHueSaturation(std::uint64_t nodeId, std::uint16_t endpoint, 
     Impl *impl = m_impl.get();
     impl->post([impl, nodeId, endpoint, hue, saturation, done = std::move(done)]() mutable {
         impl->setHueSaturation(nodeId, endpoint, hue, saturation, std::move(done));
+    });
+}
+
+std::string Controller::compressedFabricId() const
+{
+    return m_impl->compressedFabricIdHex;
+}
+
+void Controller::setFabricLabel(std::uint64_t nodeId, const std::string &label, std::function<void(CHIP_ERROR)> done)
+{
+    Impl *impl = m_impl.get();
+    impl->post([impl, nodeId, label, done = std::move(done)]() mutable {
+        impl->setFabricLabel(nodeId, label, std::move(done));
     });
 }
 
