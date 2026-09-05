@@ -697,9 +697,19 @@ protected:
         });
     }
 
+    // A name given in phi. Matter devices carry a writable NodeLabel, but
+    // a bridge's vendor tends to own it; the name stays with the fabric and
+    // shows wherever the adapter lists its nodes.
     void onDeviceNameUpdate(const phi::DeviceNameUpdateRequest &request) override
     {
-        submit(makeResponse(request.cmdId, v1::CmdStatus::NotImplemented, "Renaming is not supported yet"));
+        std::uint64_t nodeId = 0;
+        std::uint16_t endpoint = 0;
+        if (!parseDeviceExternalId(request.deviceExternalId, &nodeId, &endpoint)) {
+            submit(makeResponse(request.cmdId, v1::CmdStatus::NotSupported, "Unknown Matter device"));
+            return;
+        }
+        m_controller.setDeviceName(request.deviceExternalId, trimmed(request.name));
+        submit(makeResponse(request.cmdId, v1::CmdStatus::Success, {}));
     }
 
     void onDeviceEffectInvoke(const phi::DeviceEffectInvokeRequest &request) override
@@ -883,6 +893,24 @@ private:
         }
         m_devicesByNode.erase(it);
         m_nodeNames.erase(nodeId);
+        m_nodeAddresses.erase(nodeId);
+    }
+
+    // How a node is called in a list: the name phi's owner gave its gateway
+    // device, or its only device, else what describe() made of it.
+    std::string nodeDisplayName(std::uint64_t nodeId) const
+    {
+        std::string name = m_controller.deviceName(deviceExternalId(nodeId, 0));
+        if (name.empty()) {
+            const auto devices = m_devicesByNode.find(nodeId);
+            if (devices != m_devicesByNode.end() && devices->second.size() == 1)
+                name = m_controller.deviceName(*devices->second.begin());
+        }
+        if (name.empty()) {
+            const auto shelf = m_nodeNames.find(nodeId);
+            name = shelf != m_nodeNames.end() ? shelf->second : std::string();
+        }
+        return name.empty() ? "Node" : name;
     }
 
     // The nodes of this fabric as the choices of a Select field: the UI asks
@@ -895,9 +923,11 @@ private:
         for (const std::uint64_t nodeId : m_controller.nodes()) {
             Json::Value choice(Json::objectValue);
             choice["value"] = nodeText(nodeId);
-            const auto name = m_nodeNames.find(nodeId);
-            const std::string label = (name != m_nodeNames.end() && !name->second.empty()) ? name->second : "Node";
-            choice["label"] = label + " (" + nodeText(nodeId) + ")";
+            std::string detail = nodeText(nodeId);
+            const auto address = m_nodeAddresses.find(nodeId);
+            if (address != m_nodeAddresses.end() && !address->second.empty())
+                detail += ", " + address->second;
+            choice["label"] = nodeDisplayName(nodeId) + " (" + detail + ")";
             choices.append(choice);
         }
         Json::Value root(Json::objectValue);
@@ -1034,10 +1064,16 @@ private:
         const std::string nodeName = !info.label.empty() ? info.label : info.product;
         std::size_t published = 0;
         {
-            // For the pick lists: a label if the owner gave one, else maker
-            // and model, which is how the box on the shelf is known.
+            // For the pick lists: maker and model, which is how the box on
+            // the shelf is known, plus the node's own label when it says
+            // more than the model does. A name given in phi wins later.
+            std::string shelf = trimmed(info.vendor + " " + info.product);
+            if (!info.label.empty() && info.label != info.product && info.label != shelf)
+                shelf = info.label + (shelf.empty() ? "" : " (" + shelf + ")");
             std::lock_guard<std::mutex> lock(m_specsMutex);
-            m_nodeNames[info.nodeId] = !info.label.empty() ? info.label : trimmed(info.vendor + " " + info.product);
+            m_nodeNames[info.nodeId] = shelf;
+            if (!info.address.empty())
+                m_nodeAddresses[info.nodeId] = info.address;
         }
 
         for (const auto &ep : info.endpoints) {
@@ -1063,6 +1099,8 @@ private:
             gateway.model = info.product;
             gateway.firmware = info.software;
             gateway.name = nodeName.empty() ? gateway.externalId : nodeName;
+            if (const std::string given = m_controller.deviceName(gateway.externalId); !given.empty())
+                gateway.name = given;
             char nodeText[32];
             std::snprintf(nodeText, sizeof(nodeText), "0x%llx", static_cast<unsigned long long>(info.nodeId));
             gateway.metaJson = std::string("{\"kind\":\"matter\",\"nodeId\":\"") + nodeText + "\",\"endpoint\":0}";
@@ -1097,6 +1135,8 @@ private:
             }
             if (device.name.empty())
                 device.name = device.externalId;
+            if (const std::string given = m_controller.deviceName(device.externalId); !given.empty())
+                device.name = given;
 
             Json::Value meta(Json::objectValue);
             meta["kind"] = "matter";
@@ -1218,6 +1258,7 @@ private:
     std::unordered_map<std::string, ColorState> m_colors;
     std::map<std::uint64_t, std::set<std::string>> m_devicesByNode;
     std::map<std::uint64_t, std::string> m_nodeNames;
+    std::map<std::uint64_t, std::string> m_nodeAddresses;
     std::uint16_t m_listenPort = 0;
     std::string m_fabricLabel = kDefaultFabricLabel;
     bool m_nodesLabeled = false;
@@ -1252,7 +1293,7 @@ protected:
         // SupportsDiscovery without a discovery query is what puts a plugin
         // on the discover page as a manual entry; there is nothing to scan
         // for, the fabric is created on the spot.
-        caps.flags = v1::AdapterFlag::SupportsDiscovery;
+        caps.flags = v1::AdapterFlag::SupportsDiscovery | v1::AdapterFlag::SupportsRename;
 
         v1::AdapterActionDescriptor commission;
         commission.id = kCommissionAction;

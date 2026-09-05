@@ -192,6 +192,7 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
     };
     mutable std::mutex registryMutex;
     std::map<std::uint64_t, NodeRecord> registry;
+    std::map<std::string, std::string> deviceNames;
     std::uint64_t nextNodeId = 1;
     std::uint8_t ipk[Crypto::CHIP_CRYPTO_SYMMETRIC_KEY_LENGTH_BYTES];
     std::string compressedFabricIdHex;
@@ -263,6 +264,11 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
                 haveIpk = true;
             if (root.isMember("nextNodeId"))
                 nextNodeId = root["nextNodeId"].asUInt64();
+            deviceNames.clear();
+            if (root.isMember("names") && root["names"].isObject()) {
+                for (const std::string &key : root["names"].getMemberNames())
+                    deviceNames[key] = root["names"][key].asString();
+            }
             for (const Json::Value &node : root["nodes"]) {
                 NodeRecord record;
                 record.nodeId = node["nodeId"].asUInt64();
@@ -300,6 +306,10 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
             nodes.append(node);
         }
         root["nodes"] = nodes;
+        Json::Value names(Json::objectValue);
+        for (const auto &[id, name] : deviceNames)
+            names[id] = name;
+        root["names"] = names;
 
         const std::filesystem::path path = registryPath();
         const std::filesystem::path tmp = path.string() + ".tmp";
@@ -330,11 +340,39 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
         return nextNodeId++;
     }
 
+    void setDeviceName(const std::string &deviceId, const std::string &name)
+    {
+        std::lock_guard<std::mutex> lock(registryMutex);
+        if (name.empty())
+            deviceNames.erase(deviceId);
+        else
+            deviceNames[deviceId] = name;
+        std::string error;
+        if (!saveRegistryLocked(&error))
+            log(LogLevel::Error, "registry not saved: " + error);
+    }
+
+    std::string deviceName(const std::string &deviceId) const
+    {
+        std::lock_guard<std::mutex> lock(registryMutex);
+        const auto it = deviceNames.find(deviceId);
+        return it == deviceNames.end() ? std::string() : it->second;
+    }
+
     void forgetNode(std::uint64_t nodeId)
     {
         std::lock_guard<std::mutex> lock(registryMutex);
         if (registry.erase(nodeId) == 0)
             return;
+        // The node's devices are gone with it, names included.
+        char prefix[32];
+        std::snprintf(prefix, sizeof(prefix), "n%llx-e", static_cast<unsigned long long>(nodeId));
+        for (auto it = deviceNames.begin(); it != deviceNames.end();) {
+            if (it->first.rfind(prefix, 0) == 0)
+                it = deviceNames.erase(it);
+            else
+                ++it;
+        }
         std::string error;
         if (!saveRegistryLocked(&error))
             log(LogLevel::Error, "registry not saved: " + error);
@@ -856,6 +894,11 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
                                                       ColorControl::Attributes::ColorTempPhysicalMinMireds::Id);
                 read->paths[11] = AttributePathParams(kInvalidEndpointId, ColorControl::Id,
                                                       ColorControl::Attributes::ColorTempPhysicalMaxMireds::Id);
+                if (session->IsSecureSession()) {
+                    char address[Inet::IPAddress::kMaxStringLength] = {};
+                    session->AsSecureSession()->GetPeerAddress().GetIPAddress().ToString(address, sizeof(address));
+                    read->info.address = address;
+                }
                 ReadPrepareParams params(session);
                 params.mpAttributePathParamsList = read->paths;
                 params.mAttributePathParamsListSize = std::size(read->paths);
@@ -1435,6 +1478,16 @@ void Controller::setHueSaturation(std::uint64_t nodeId, std::uint16_t endpoint, 
 std::string Controller::compressedFabricId() const
 {
     return m_impl->compressedFabricIdHex;
+}
+
+void Controller::setDeviceName(const std::string &deviceId, const std::string &name)
+{
+    m_impl->setDeviceName(deviceId, name);
+}
+
+std::string Controller::deviceName(const std::string &deviceId) const
+{
+    return m_impl->deviceName(deviceId);
 }
 
 void Controller::setFabricLabel(std::uint64_t nodeId, const std::string &label, std::function<void(CHIP_ERROR)> done)

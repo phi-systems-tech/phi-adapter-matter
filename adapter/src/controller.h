@@ -39,6 +39,8 @@ struct NodeInfo {
     std::string product;
     std::string label;
     std::string software;
+    // The address the node answered from, as text; empty when unknown.
+    std::string address;
     std::vector<EndpointInfo> endpoints;
 };
 
@@ -97,6 +99,11 @@ public:
     std::vector<std::uint64_t> nodes() const;
     // The compressed fabric id as 16 hex digits, the fabric's public name.
     std::string compressedFabricId() const;
+
+    // Names people gave devices in phi, kept in the registry so that lists
+    // can show them; keyed by the device id ("n1-e0").
+    void setDeviceName(const std::string &deviceId, const std::string &name);
+    std::string deviceName(const std::string &deviceId) const;
 
     // Writes the fabric label to the node (Operational Credentials,
     // UpdateFabricLabel). Done after commissioning and whenever it changes.
