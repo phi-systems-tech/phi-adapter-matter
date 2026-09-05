@@ -189,6 +189,13 @@ protected:
         callbacks.onOff = [this](std::uint64_t nodeId, std::uint16_t endpoint, bool on) {
             sendChannelStateUpdated(deviceExternalId(nodeId, endpoint), kOnOffChannel, v1::ScalarValue(on), nowMs());
         };
+        callbacks.topologyChanged = [this](std::uint64_t nodeId) {
+            char text[80];
+            std::snprintf(text, sizeof(text), "node 0x%llx: endpoint list changed, reading it again",
+                          static_cast<unsigned long long>(nodeId));
+            log(phi::LogLevel::Info, phi::LogCategory::Device, text, {}, "matter.node.topology");
+            describeAndPublish(nodeId);
+        };
         callbacks.reachable = [this](std::uint64_t nodeId, bool reachable) {
             char text[80];
             std::snprintf(text, sizeof(text), "node 0x%llx %s", static_cast<unsigned long long>(nodeId),
@@ -336,7 +343,12 @@ private:
     // a device, then subscribes.
     void adoptNode(std::uint64_t nodeId)
     {
-        m_controller.describe(nodeId, [this](const phimatter::NodeInfo &info, CHIP_ERROR err) {
+        describeAndPublish(nodeId, true);
+    }
+
+    void describeAndPublish(std::uint64_t nodeId, bool subscribe = false)
+    {
+        m_controller.describe(nodeId, [this, subscribe](const phimatter::NodeInfo &info, CHIP_ERROR err) {
             if (err != CHIP_NO_ERROR) {
                 char text[96];
                 std::snprintf(text, sizeof(text), "node 0x%llx: cannot read its structure: %s",
@@ -345,12 +357,36 @@ private:
                 return;
             }
             publishNode(info);
-            m_controller.subscribeOnOff(info.nodeId);
+            if (subscribe)
+                m_controller.subscribeOnOff(info.nodeId);
         });
     }
 
-    void publishNode(const phimatter::NodeInfo &info)
+    static std::string hexList(const std::vector<std::uint32_t> &values)
     {
+        std::string out;
+        for (const std::uint32_t v : values) {
+            char text[16];
+            std::snprintf(text, sizeof(text), "%s0x%04x", out.empty() ? "" : " ", static_cast<unsigned>(v));
+            out += text;
+        }
+        return out;
+    }
+
+    void publishNode(const phimatter::NodeInfo &rawInfo)
+    {
+        // Vendors pad their strings; the Hama bridge reports " 00176637".
+        phimatter::NodeInfo info = rawInfo;
+        info.vendor = trimmed(info.vendor);
+        info.product = trimmed(info.product);
+        info.label = trimmed(info.label);
+        info.software = trimmed(info.software);
+        for (auto &ep : info.endpoints) {
+            ep.label = trimmed(ep.label);
+            ep.vendor = trimmed(ep.vendor);
+            ep.product = trimmed(ep.product);
+        }
+
         std::size_t onOffEndpoints = 0;
         for (const auto &ep : info.endpoints) {
             if (std::find(ep.serverClusters.begin(), ep.serverClusters.end(), kOnOffClusterId) != ep.serverClusters.end())
@@ -359,6 +395,38 @@ private:
 
         const std::string nodeName = !info.label.empty() ? info.label : info.product;
         std::size_t published = 0;
+
+        for (const auto &ep : info.endpoints) {
+            char text[256];
+            std::snprintf(text, sizeof(text), "node 0x%llx endpoint %u: types [%s] servers [%s]%s%s",
+                          static_cast<unsigned long long>(info.nodeId), static_cast<unsigned>(ep.endpoint),
+                          hexList(ep.deviceTypes).c_str(), hexList(ep.serverClusters).c_str(),
+                          ep.label.empty() ? "" : " label ", ep.label.c_str());
+            log(phi::LogLevel::Info, phi::LogCategory::Device, text, {}, "matter.node.endpoint");
+        }
+
+        // A node with nothing to switch is still a member of the fabric; a
+        // bridge without devices is the usual case. Show it as a gateway so
+        // that its presence is visible, channels or not.
+        if (onOffEndpoints == 0) {
+            v1::Device gateway;
+            gateway.externalId = deviceExternalId(info.nodeId, 0);
+            gateway.deviceClass = v1::DeviceClass::Gateway;
+            gateway.manufacturer = info.vendor;
+            gateway.model = info.product;
+            gateway.firmware = info.software;
+            gateway.name = nodeName.empty() ? gateway.externalId : nodeName;
+            char nodeText[32];
+            std::snprintf(nodeText, sizeof(nodeText), "0x%llx", static_cast<unsigned long long>(info.nodeId));
+            gateway.metaJson = std::string("{\"kind\":\"matter\",\"nodeId\":\"") + nodeText + "\",\"endpoint\":0}";
+            std::string error;
+            if (!sendDeviceUpdated(gateway, {}, &error)) {
+                log(phi::LogLevel::Error, phi::LogCategory::Internal, "Failed to publish %1: %2",
+                    phi::ScalarList{gateway.externalId, error}, "matter.device.publish.failed");
+            } else {
+                ++published;
+            }
+        }
         for (const auto &ep : info.endpoints) {
             if (std::find(ep.serverClusters.begin(), ep.serverClusters.end(), kOnOffClusterId) == ep.serverClusters.end())
                 continue;
@@ -484,7 +552,10 @@ protected:
         commission.id = kCommissionAction;
         commission.label = "Commission device";
         commission.description = "Adds the device behind the pairing code to this fabric.";
-        commission.metaJson = R"({"placement":"card","kind":"command","requiresAck":true})";
+        // A dialog with the fields bound to this action by parentActionId;
+        // the UI sends their values as the action's params.
+        commission.hasForm = true;
+        commission.metaJson = R"({"placement":"card","kind":"open_dialog","requiresAck":true})";
         caps.instanceActions.push_back(commission);
 
         caps.defaultsJson = std::string("{\"name\":") + jsonQuoted(kDisplayName) + ",\"" + kAllowUntrustedField + "\":false}";
@@ -504,7 +575,7 @@ protected:
                 "description":"Devices join this fabric with their pairing code: the 11-digit manual code or the text behind the QR code (MT:...). The device must already be on the network.",
                 "layout":{"gridUnits":24,"gutter":[12,8],"defaults":{"span":{"xs":24,"sm":24,"md":12,"lg":12,"xl":12,"xxl":12},"labelPosition":"top","labelSpan":8,"controlSpan":16,"actionPosition":"inline","actionSpan":6}},
                 "fields":[
-                    {"key":"pairingCode","type":"String","label":"Pairing code","description":"Manual pairing code or QR payload of the device to commission.","placeholder":"MT:... or 3497-011-2332","flags":["Transient"]},
+                    {"key":"pairingCode","type":"String","label":"Pairing code","description":"The code printed on the device or shown by its maker's app (Hue: Settings, Smart home, Matter). Either the 11-digit manual code or the text behind the QR code.","placeholder":"MT:... or 3497-011-2332","flags":["Required","Transient"],"parentActionId":"commission"},
                     {"key":"allowUntrustedAttestation","type":"Boolean","label":"Allow uncertified devices","description":"Continue commissioning when the device's attestation certificate is not signed by a known Matter PAA. Needed for sample apps and development boards.","default":false}
                 ]
             }

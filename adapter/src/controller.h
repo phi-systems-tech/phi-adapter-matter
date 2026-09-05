@@ -52,6 +52,8 @@ struct Callbacks {
     std::function<void(std::uint64_t nodeId, std::uint16_t endpoint, bool on)> onOff;
     // A node's subscription came up or went down.
     std::function<void(std::uint64_t nodeId, bool reachable)> reachable;
+    // The node's endpoint list changed: a bridge gained or lost a device.
+    std::function<void(std::uint64_t nodeId)> topologyChanged;
 };
 
 class Controller

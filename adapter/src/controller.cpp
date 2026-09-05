@@ -59,6 +59,11 @@ constexpr FabricId kFabricId = 1;
 constexpr const char *kRegistryFile = "nodes.json";
 constexpr std::uint16_t kSubscribeMinIntervalSeconds = 0;
 constexpr std::uint16_t kSubscribeMaxIntervalSeconds = 300;
+// How long a commissioning attempt may run. The SDK's pairer waits for a
+// commissionable node with the code's discriminator for as long as it is
+// asked to; a device whose window is shut never answers, and without a
+// deadline the attempt would sit there and block the next one.
+constexpr std::uint32_t kCommissioningDeadlineSeconds = 90;
 
 std::string toHex(const std::uint8_t *data, std::size_t size)
 {
@@ -98,6 +103,48 @@ void runPosted(intptr_t arg)
     delete task;
 }
 
+// The example issuer hands every device the SDK's well-known test IPK. The
+// device then computes CASE destination identifiers with that key while the
+// controller computes them with the fabric's own, and the two never meet
+// ("No shared trusted root" from the device). This delegate lets the example
+// issuer do the certificate work and replaces the key on the way back.
+class IssuerWithFabricIpk final : public OperationalCredentialsDelegate
+{
+public:
+    IssuerWithFabricIpk(ExampleOperationalCredentialsIssuer &inner, const std::uint8_t *ipk, std::size_t ipkSize)
+        : m_inner(inner), m_ipk(ipk, ipkSize), m_bridge(&IssuerWithFabricIpk::onChain, this)
+    {}
+
+    CHIP_ERROR GenerateNOCChain(const ByteSpan &csrElements, const ByteSpan &csrNonce, const ByteSpan &attestationSignature,
+                                const ByteSpan &attestationChallenge, const ByteSpan &dac, const ByteSpan &pai,
+                                Callback::Callback<OnNOCChainGeneration> *onCompletion) override
+    {
+        m_pending = onCompletion;
+        return m_inner.GenerateNOCChain(csrElements, csrNonce, attestationSignature, attestationChallenge, dac, pai, &m_bridge);
+    }
+
+    void SetNodeIdForNextNOCRequest(NodeId nodeId) override { m_inner.SetNodeIdForNextNOCRequest(nodeId); }
+    void SetFabricIdForNextNOCRequest(FabricId fabricId) override { m_inner.SetFabricIdForNextNOCRequest(fabricId); }
+
+private:
+    static void onChain(void *context, CHIP_ERROR status, const ByteSpan &noc, const ByteSpan &icac, const ByteSpan &rcac,
+                        Optional<Crypto::IdentityProtectionKeySpan>, Optional<NodeId> adminSubject)
+    {
+        auto *self = static_cast<IssuerWithFabricIpk *>(context);
+        Callback::Callback<OnNOCChainGeneration> *pending = self->m_pending;
+        self->m_pending = nullptr;
+        if (pending == nullptr)
+            return;
+        pending->mCall(pending->mContext, status, noc, icac, rcac,
+                       MakeOptional(Crypto::IdentityProtectionKeySpan(self->m_ipk.data())), adminSubject);
+    }
+
+    ExampleOperationalCredentialsIssuer &m_inner;
+    ByteSpan m_ipk;
+    Callback::Callback<OnNOCChainGeneration> *m_pending = nullptr;
+    Callback::Callback<OnNOCChainGeneration> m_bridge;
+};
+
 } // namespace
 
 const char *errorText(CHIP_ERROR err)
@@ -121,6 +168,7 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
     Crypto::RawKeySessionKeystore sessionKeystore;
     Credentials::GroupDataProviderImpl groupDataProvider;
     ExampleOperationalCredentialsIssuer opCredsIssuer;
+    std::unique_ptr<IssuerWithFabricIpk> credentialsDelegate;
     std::unique_ptr<Credentials::FileAttestationTrustStore> fileTrustStore;
     const Credentials::AttestationTrustStore *trustStore = nullptr;
     Credentials::DeviceAttestationVerifier *dacVerifier = nullptr;
@@ -378,8 +426,10 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
         if (err != CHIP_NO_ERROR)
             return fail("controller certificate chain", err);
 
+        credentialsDelegate = std::make_unique<IssuerWithFabricIpk>(opCredsIssuer, ipk, sizeof(ipk));
+
         SetupParams setup;
-        setup.operationalCredentialsDelegate = &opCredsIssuer;
+        setup.operationalCredentialsDelegate = credentialsDelegate.get();
         setup.operationalKeypair = &ephemeralKey;
         setup.controllerRCAC = rcacSpan;
         setup.controllerICAC = icacSpan;
@@ -477,11 +527,22 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
 
     // ---- DevicePairingDelegate ---------------------------------------
 
+    static void onCommissioningDeadline(System::Layer *, void *appState)
+    {
+        auto *self = static_cast<Impl *>(appState);
+        if (!self->commissioning || self->commissioning->finished)
+            return;
+        self->log(LogLevel::Warn, "commissioning: no device answered within the deadline; is its commissioning window open?");
+        (void)self->commissioner->StopPairing(self->commissioning->nodeId);
+        self->finishCommissioning(CHIP_ERROR_TIMEOUT);
+    }
+
     void finishCommissioning(CHIP_ERROR err)
     {
         if (!commissioning || commissioning->finished)
             return;
         commissioning->finished = true;
+        DeviceLayer::SystemLayer().CancelTimer(&Impl::onCommissioningDeadline, this);
         auto job = std::move(commissioning);
         if (job->done)
             job->done(job->nodeId, err);
@@ -752,12 +813,20 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
         std::uint64_t nodeId = 0;
         std::unique_ptr<ReadClient> client;
         bool established = false;
+        bool primed = false;
 
         void OnAttributeData(const ConcreteDataAttributePath &path, TLV::TLVReader *data, const StatusIB &status) override
         {
             using namespace chip::app::Clusters;
             if (!status.IsSuccess() || data == nullptr)
                 return;
+            if (path.mClusterId == Descriptor::Id && path.mAttributeId == Descriptor::Attributes::PartsList::Id) {
+                // Reported once when the subscription comes up and again
+                // whenever a bridge's set of endpoints changes.
+                if (primed && self->callbacks.topologyChanged)
+                    self->callbacks.topologyChanged(nodeId);
+                return;
+            }
             if (path.mClusterId != OnOff::Id || path.mAttributeId != OnOff::Attributes::OnOff::Id)
                 return;
             bool on = false;
@@ -765,6 +834,13 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
                 return;
             if (self->callbacks.onOff)
                 self->callbacks.onOff(nodeId, path.mEndpointId, on);
+        }
+
+        void OnReportEnd() override
+        {
+            // The first report is the priming report; the topology it carries
+            // is the one describe() just read.
+            primed = true;
         }
 
         void OnSubscriptionEstablished(SubscriptionId) override
@@ -819,11 +895,12 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
         withSession(nodeId,
             [this, raw](Messaging::ExchangeManager &exchangeMgr, const SessionHandle &session) {
                 using namespace chip::app::Clusters;
-                auto *paths = new AttributePathParams[1];
+                auto *paths = new AttributePathParams[2];
                 paths[0] = AttributePathParams(kInvalidEndpointId, OnOff::Id, OnOff::Attributes::OnOff::Id);
+                paths[1] = AttributePathParams(0, Descriptor::Id, Descriptor::Attributes::PartsList::Id);
                 ReadPrepareParams params(session);
                 params.mpAttributePathParamsList = paths;
-                params.mAttributePathParamsListSize = 1;
+                params.mAttributePathParamsListSize = 2;
                 params.mMinIntervalFloorSeconds = kSubscribeMinIntervalSeconds;
                 params.mMaxIntervalCeilingSeconds = kSubscribeMaxIntervalSeconds;
                 params.mKeepSubscriptions = true;
@@ -878,8 +955,10 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
     void commission(const std::string &setupCode, std::function<void(std::uint64_t, CHIP_ERROR)> done)
     {
         if (commissioning) {
-            done(0, CHIP_ERROR_BUSY);
-            return;
+            // A new code supersedes an attempt still waiting for its device.
+            log(LogLevel::Info, "commissioning: cancelling the attempt in progress");
+            (void)commissioner->StopPairing(commissioning->nodeId);
+            finishCommissioning(CHIP_ERROR_CANCELLED);
         }
         auto job = std::make_unique<Commissioning>();
         job->nodeId = allocateNodeId();
@@ -896,8 +975,12 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
 
         const CHIP_ERROR err = commissioner->PairDevice(commissioning->nodeId, setupCode.c_str(), commissioningParams,
                                                         DiscoveryType::kDiscoveryNetworkOnly);
-        if (err != CHIP_NO_ERROR)
+        if (err != CHIP_NO_ERROR) {
             finishCommissioning(err);
+            return;
+        }
+        (void)DeviceLayer::SystemLayer().StartTimer(System::Clock::Seconds32(kCommissioningDeadlineSeconds),
+                                                    &Impl::onCommissioningDeadline, this);
     }
 };
 
