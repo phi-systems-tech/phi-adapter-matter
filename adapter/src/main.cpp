@@ -932,15 +932,16 @@ private:
         return channel;
     }
 
-    // The fabric's public face on the instance card: its label and its
-    // compressed id, which is how a device's fabric list names it. As the
-    // card's summary line - "host" is a network name to core, and a fabric
-    // is not one.
+    // The fabric's public face: its label and its compressed id, which is
+    // how a device's fabric list names it. The host is localhost, because
+    // the controller runs here and core resolves what stands in "host".
     void publishFabric()
     {
         const std::string id = m_controller.compressedFabricId();
         const std::string summary = "Fabric " + m_fabricLabel + " (" + id + ")";
         Json::Value patch(Json::objectValue);
+        // The controller lives on this machine; that is the instance's host.
+        patch["host"] = "localhost";
         patch["summary"] = summary;
         Json::Value fabric(Json::objectValue);
         fabric["label"] = m_fabricLabel;
@@ -1280,7 +1281,7 @@ protected:
         remove.metaJson = R"({"placement":"card","kind":"open_dialog","requiresAck":true,"loadFormOnOpen":true})";
         caps.instanceActions.push_back(remove);
 
-        caps.defaultsJson = std::string("{\"name\":") + jsonQuoted(kDisplayName) + ",\"" + kAllowUntrustedField + "\":false,\"" + kListenPortField + "\":5540}";
+        caps.defaultsJson = std::string("{\"name\":") + jsonQuoted(kDisplayName) + ",\"host\":\"localhost\",\"" + kAllowUntrustedField + "\":false,\"" + kListenPortField + "\":5540}";
         return caps;
     }
 
