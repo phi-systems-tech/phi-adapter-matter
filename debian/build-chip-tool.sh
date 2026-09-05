@@ -53,6 +53,7 @@ mkdir -p "$HOME" "$PW_ENVIRONMENT_ROOT" "$CIPD_CACHE_DIR"
 # directory empty, and a plain update sees nothing to do.
 cd "$src"
 python3 scripts/checkout_submodules.py --shallow --force --platform linux --jobs "$jobs"
+checked_out=$(date +%s)
 
 # Pigweed's bootstrap: gn, ninja, a Python of its own and zap arrive over CIPD.
 # Whether CIPD has every one of them for this architecture is the first thing
@@ -67,6 +68,7 @@ set +u
 # shellcheck disable=SC1091
 source scripts/bootstrap.sh -p build
 set -u
+bootstrapped=$(date +%s)
 
 # One target, release flags. This is what upstream's gn_build_example.sh does,
 # spelled out because that script hands ninja no job count and this one has
@@ -80,12 +82,17 @@ binary=$out/chip-tool
 test -x "$binary"
 
 # What was built, in numbers a person can compare against the last time. Ends
-# up under /usr/share/doc in the package.
+# up under /usr/share/doc in the package. The phases are timed separately
+# because the checkout and the CIPD cache survive between builds: a rebuild
+# spends seconds where the first build spent twenty minutes downloading.
 {
     echo "tag=$tag"
     echo "commit=$(git rev-parse HEAD)"
     echo "arch=$(dpkg-architecture -qDEB_HOST_ARCH 2>/dev/null || uname -m)"
     echo "jobs=$jobs"
+    echo "checkout_seconds=$((checked_out - started))"
+    echo "bootstrap_seconds=$((bootstrapped - checked_out))"
+    echo "compile_seconds=$((finished - bootstrapped))"
     echo "build_seconds=$((finished - started))"
     echo "binary_bytes_unstripped=$(stat -c %s "$binary")"
     echo "checkout_bytes=$(du -sb "$src" | cut -f1)"
