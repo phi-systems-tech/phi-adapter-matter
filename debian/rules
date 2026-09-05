@@ -9,9 +9,12 @@
 # The same trade phi-nodejs and phi-z2m-runtime make: the build needs the
 # network, and in exchange the repository carries no binaries.
 
+include /usr/share/dpkg/architecture.mk
+
 CHIP_VERSION := $(shell cat debian/CHIP_VERSION)
 WORK := $(CURDIR)/debian/upstream
 DEST := debian/phi-adapter-matter
+PLUGINS := $(DEST)/usr/lib/$(DEB_HOST_MULTIARCH)/phi/plugins/adapters
 
 %:
 	dh $@
@@ -20,10 +23,18 @@ override_dh_auto_build:
 	debian/build-chip-tool.sh $(CHIP_VERSION) $(WORK)
 
 override_dh_auto_install:
-	install -D -m 0755 $(WORK)/out/chip-tool/chip-tool \
+	install -D -m 0755 $(WORK)/out/phi_adapter_matter_ipc \
+		$(PLUGINS)/phi_adapter_matter_ipc
+	install -D -m 0644 debian/matter-config.json \
+		$(PLUGINS)/matter-config.json
+	install -D -m 0755 $(WORK)/out/chip-tool \
 		$(DEST)/usr/lib/phi/matter/chip-tool
 	install -D -m 0644 $(WORK)/build-info.txt \
 		$(DEST)/usr/share/doc/phi-adapter-matter/CHIP-BUILD-INFO
+	# The PAA roots devices attest against, from the SDK's production set.
+	install -d $(DEST)/usr/share/phi/matter/paa-root-certs
+	install -m 0644 $(WORK)/src/credentials/production/paa-root-certs/*.der \
+		$(DEST)/usr/share/phi/matter/paa-root-certs/
 
 # The checkout and the CIPD cache are kept across cleans unless asked
 # otherwise: a clean that threw away several gigabytes of upstream source and

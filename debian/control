@@ -20,7 +20,8 @@ Build-Depends:
  libavahi-client-dev,
  libgirepository1.0-dev,
  libcairo2-dev,
- libreadline-dev
+ libreadline-dev,
+ phi-adapter-sdk-dev (>= 0.8.0)
 Standards-Version: 4.7.0
 Rules-Requires-Root: no
 Homepage: https://phisys.com
@@ -29,7 +30,9 @@ Package: phi-adapter-matter
 Architecture: any
 Depends:
  ${shlibs:Depends},
- ${misc:Depends}
+ ${misc:Depends},
+ phi-adapter-sdk (>= 0.8.0),
+ avahi-daemon
 Description: PHI Matter controller adapter, built on connectedhomeip
  The southbound Matter controller for PHI core, built on the CSA's reference
  implementation. One adapter for every Matter device, whether it hangs on

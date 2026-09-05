@@ -5,3 +5,5 @@
 /debian/files
 /debian/*.substvars
 /debian/*.debhelper.log
+/adapter/third_party/
+/adapter/build_overrides

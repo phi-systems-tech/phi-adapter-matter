@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 #
-# Fetches connectedhomeip at one tag and builds chip-tool from it.
+# Fetches connectedhomeip at one tag and builds the phi Matter sidecar and
+# chip-tool from it, in one gn root: adapter/ in this repository, which reaches
+# the checkout through two symlinks laid here.
 #
 # Everything the build touches lives under the work directory: the checkout,
 # Pigweed's environment, the CIPD cache and a HOME of its own. Nothing lands in
@@ -14,7 +16,9 @@ set -euo pipefail
 tag=$1
 work=$2
 src=$work/src
-out=$work/out/chip-tool
+out=$work/out
+repo=$(cd "$(dirname "$0")/.." && pwd)
+root=$repo/adapter
 # Parallelism. nproc is right on a build host; on a machine that also runs the
 # stack, PHI_CHIP_JOBS caps it - a CHIP translation unit takes the better part
 # of a gigabyte to compile.
@@ -70,16 +74,22 @@ source scripts/bootstrap.sh -p build
 set -u
 bootstrapped=$(date +%s)
 
-# One target, release flags. This is what upstream's gn_build_example.sh does,
-# spelled out because that script hands ninja no job count and this one has
-# to.
-gn gen --check --fail-on-unused-args --root=examples/chip-tool "$out" \
+# The sidecar's gn root sees the checkout as third_party/connectedhomeip and
+# borrows the examples' build_overrides, the way chip-tool itself does.
+mkdir -p "$root/third_party"
+ln -sfn ../../debian/upstream/src "$root/third_party/connectedhomeip"
+ln -sfn third_party/connectedhomeip/examples/build_overrides "$root/build_overrides"
+
+# Release flags. This is what upstream's gn_build_example.sh does, spelled out
+# because that script hands ninja no job count and this one has to.
+gn gen --check --fail-on-unused-args --root="$root" "$out" \
     --args="is_debug=false"
 ninja -C "$out" -j "$jobs"
 
 finished=$(date +%s)
 binary=$out/chip-tool
 test -x "$binary"
+test -x "$out/phi_adapter_matter_ipc"
 
 # What was built, in numbers a person can compare against the last time. Ends
 # up under /usr/share/doc in the package. The phases are timed separately
@@ -95,6 +105,7 @@ test -x "$binary"
     echo "compile_seconds=$((finished - bootstrapped))"
     echo "build_seconds=$((finished - started))"
     echo "binary_bytes_unstripped=$(stat -c %s "$binary")"
+    echo "sidecar_bytes_unstripped=$(stat -c %s "$out/phi_adapter_matter_ipc")"
     echo "checkout_bytes=$(du -sb "$src" | cut -f1)"
 } > "$work/build-info.txt"
 cat "$work/build-info.txt"

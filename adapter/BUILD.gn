@@ -1,0 +1,54 @@
+import("//build_overrides/build.gni")
+import("//build_overrides/chip.gni")
+import("${chip_root}/build/chip/tools.gni")
+
+assert(chip_build_tools)
+
+# The phi adapter SDK from its -dev package: headers under /usr/include/phi,
+# which is on the default search path, and the library in the multiarch
+# directory, which is on the default link path.
+config("phi_adapter_sdk") {
+  libs = [ "phi_adapter_sdk" ]
+
+  # The SDK headers use concepts and std::span. CHIP compiles as gnu++17 and
+  # the later -std flag wins.
+  cflags_cc = [ "-std=gnu++20" ]
+}
+
+executable("phi_adapter_matter_ipc") {
+  sources = [
+    "src/controller.cpp",
+    "src/controller.h",
+    "src/main.cpp",
+
+    # chip-tool's ini-file storage, an example source rather than a library
+    # target; compiled in here the way chip-tool compiles it in.
+    "${chip_root}/src/controller/ExamplePersistentStorage.cpp",
+    "${chip_root}/src/controller/ExamplePersistentStorage.h",
+  ]
+
+  include_dirs = [ "${chip_root}/zzz_generated/app-common" ]
+
+  deps = [
+    "${chip_root}/src/app/server",
+    "${chip_root}/src/controller",
+    "${chip_root}/src/controller/data_model",
+    "${chip_root}/src/credentials:file_attestation_trust_store",
+    "${chip_root}/src/lib",
+    "${chip_root}/src/platform",
+    "${chip_root}/src/platform/logging:stdio",
+    "${chip_root}/third_party/inipp",
+    "${chip_root}/third_party/jsoncpp",
+  ]
+
+  configs += [ ":phi_adapter_sdk" ]
+
+  output_dir = root_out_dir
+}
+
+group("default") {
+  deps = [
+    ":phi_adapter_matter_ipc",
+    "${chip_root}/examples/chip-tool",
+  ]
+}
