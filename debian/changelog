@@ -1,3 +1,20 @@
+phi-adapter-matter (0.0.3+chip1.5.1.0-1) trixie; urgency=medium
+
+  * Share: an instance action opens an enhanced commissioning window on a
+    node for five minutes and answers with the manual code and the QR
+    payload, so a second ecosystem can be admitted from phi's side.
+  * Share and Remove pick the node from a list filled when the dialog
+    opens, labelled with the node's name and address.
+  * The fabric carries the instance name as its label on every node; the
+    instance's host is localhost and its card shows the fabric line.
+  * Renames reach the device only where they land on the device itself:
+    a single directly commissioned node gets its NodeLabel written, while
+    endpoints behind a bridge and multi-device nodes are marked fixedName.
+  * Delete on a device card removes the node from the fabric; endpoints
+    behind a bridge carry their gateway as parent and refuse it.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sat, 05 Sep 2026 19:05:00 +0200
+
 phi-adapter-matter (0.0.2+chip1.5.1.0-1) trixie; urgency=medium
 
   * The controller sidecar, phi_adapter_matter_ipc, built as a second gn
