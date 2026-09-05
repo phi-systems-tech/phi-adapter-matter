@@ -1,3 +1,11 @@
+phi-adapter-matter (0.0.4-1) trixie; urgency=medium
+
+  * Built with CMake against phi-chip-dev, the SDK prebuilt: no GN, Pigweed
+    or checkout at build time, and the package records the SDK build in
+    Built-Using. chip-tool moves to phi-chip-tools.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sat, 05 Sep 2026 20:30:00 +0200
+
 phi-adapter-matter (0.0.3+chip1.5.1.0-1) trixie; urgency=medium
 
   * Share: an instance action opens an enhanced commissioning window on a

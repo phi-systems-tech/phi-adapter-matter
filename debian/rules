@@ -1,47 +1,18 @@
 #!/usr/bin/make -f
 
-# connectedhomeip is fetched at build time at a pinned tag rather than vendored:
-# the checkout with its Linux submodules is several gigabytes, and every byte of
-# it is upstream's, signed by upstream's tags. What we own is the tag in
-# debian/CHIP_VERSION, the build script beside this file, and the list of what
-# comes out.
-#
-# The same trade phi-nodejs and phi-z2m-runtime make: the build needs the
-# network, and in exchange the repository carries no binaries.
-
-include /usr/share/dpkg/architecture.mk
-
-CHIP_VERSION := $(shell cat debian/CHIP_VERSION)
-WORK := $(CURDIR)/debian/upstream
-DEST := debian/phi-adapter-matter
-PLUGINS := $(DEST)/usr/lib/$(DEB_HOST_MULTIARCH)/phi/plugins/adapters
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
 %:
-	dh $@
+	dh $@ --buildsystem=cmake --builddirectory=build/deb
 
-override_dh_auto_build:
-	debian/build-chip-tool.sh $(CHIP_VERSION) $(WORK)
+override_dh_auto_configure:
+	dh_auto_configure -- \
+		-DCMAKE_INSTALL_PREFIX=/usr \
+		-DPHI_ADAPTER_MATTER_USE_LOCAL_ADAPTER_SDK=OFF
 
-override_dh_auto_install:
-	install -D -m 0755 $(WORK)/out/phi_adapter_matter_ipc \
-		$(PLUGINS)/phi_adapter_matter_ipc
-	install -D -m 0644 debian/matter-config.json \
-		$(PLUGINS)/matter-config.json
-	install -D -m 0755 $(WORK)/out/chip-tool \
-		$(DEST)/usr/lib/phi/matter/chip-tool
-	install -D -m 0644 $(WORK)/build-info.txt \
-		$(DEST)/usr/share/doc/phi-adapter-matter/CHIP-BUILD-INFO
-	# The PAA roots devices attest against, from the SDK's production set.
-	install -d $(DEST)/usr/share/phi/matter/paa-root-certs
-	install -m 0644 $(WORK)/src/credentials/production/paa-root-certs/*.der \
-		$(DEST)/usr/share/phi/matter/paa-root-certs/
+override_dh_shlibdeps:
+	dh_shlibdeps -l/usr/lib/$(DEB_HOST_MULTIARCH)
 
-# The checkout and the CIPD cache are kept across cleans unless asked
-# otherwise: a clean that threw away several gigabytes of upstream source and
-# the toolchain downloads would make every rebuild a fresh download.
-# `PHI_DROP_CHIP_SOURCE=1 debian/rules clean` removes both.
-override_dh_auto_clean:
-	rm -rf $(WORK)/out $(WORK)/pw-env $(WORK)/home $(WORK)/build-info.txt
-ifneq ($(PHI_DROP_CHIP_SOURCE),)
-	rm -rf $(WORK)
-endif
+# The SDK is linked in statically; the package records which build of it.
+override_dh_gencontrol:
+	dh_gencontrol -- -Vchip:Built-Using="$$(dpkg-query -f '$${source:Package} (= $${source:Version})' -W phi-chip-dev)"
