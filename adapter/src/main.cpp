@@ -39,6 +39,7 @@ constexpr const char kCommissionAction[] = "commission";
 constexpr const char kPairingCodeField[] = "pairingCode";
 constexpr const char kRemoveAction[] = "remove";
 constexpr const char kShareAction[] = "share";
+constexpr const char kDeviceDeleteAction[] = "device.delete";
 constexpr const char kShareDeviceField[] = "shareDevice";
 constexpr std::uint16_t kShareWindowSeconds = 300;
 constexpr const char kDefaultFabricLabel[] = "phi";
@@ -653,6 +654,10 @@ protected:
             shareAction(request, std::move(resp));
             return;
         }
+        if (request.actionId == kDeviceDeleteAction) {
+            deviceDeleteAction(request, std::move(resp));
+            return;
+        }
         if (request.actionId != kCommissionAction) {
             resp.status = v1::CmdStatus::NotSupported;
             resp.error = "Unsupported action";
@@ -831,8 +836,50 @@ private:
         std::uint64_t nodeId = 0;
         if (!nodeFromForm(request, kRemoveDeviceField, resp, &nodeId))
             return;
-        const phi::CmdId cmdId = request.cmdId;
-        m_controller.remove(nodeId, [this, cmdId, nodeId](CHIP_ERROR err) {
+        removeNode(nodeId, request.cmdId, kRemoveDeviceField);
+    }
+
+    // The device menu's Delete: the node behind the device leaves the fabric.
+    // A device behind a bridge has no node of its own to leave.
+    void deviceDeleteAction(const phi::AdapterActionInvokeRequest &request, v1::ActionResponse resp)
+    {
+        const Json::Value params = parseObject(request.paramsJson);
+        const std::string device = trimmed(params.get("externalId", "").asString());
+        std::uint64_t nodeId = 0;
+        std::uint16_t endpoint = 0;
+        if (!parseDeviceExternalId(device, &nodeId, &endpoint)) {
+            resp.status = v1::CmdStatus::InvalidArgument;
+            resp.error = "Unknown Matter device";
+            submitAction(std::move(resp));
+            return;
+        }
+        if (endpoint != 0 && isBridge(nodeId)) {
+            resp.status = v1::CmdStatus::NotSupported;
+            resp.error = "This device belongs to its bridge; remove the bridge, or the device in the maker's app";
+            submitAction(std::move(resp));
+            return;
+        }
+        if (!m_started) {
+            resp.status = v1::CmdStatus::TemporarilyOffline;
+            resp.error = "Matter stack is not running";
+            submitAction(std::move(resp));
+            return;
+        }
+        const auto known = m_controller.nodes();
+        if (std::find(known.begin(), known.end(), nodeId) == known.end()) {
+            resp.status = v1::CmdStatus::InvalidArgument;
+            resp.error = "Node " + nodeText(nodeId) + " is not in this fabric";
+            submitAction(std::move(resp));
+            return;
+        }
+        removeNode(nodeId, request.cmdId, nullptr);
+    }
+
+    // Takes the node out of the fabric and its devices out of core; answers
+    // the command, clearing the dialog field when one asked.
+    void removeNode(std::uint64_t nodeId, phi::CmdId cmdId, const char *formField)
+    {
+        m_controller.remove(nodeId, [this, cmdId, nodeId, formField](CHIP_ERROR err) {
             for (const std::string &device : devicesOf(nodeId)) {
                 std::string error;
                 if (!sendDeviceRemoved(device, &error)) {
@@ -855,7 +902,8 @@ private:
                 done.resultValue = v1::ScalarValue("Node " + nodeText(nodeId) + " forgotten; the device did not let go of the fabric ("
                                                    + phimatter::errorText(err) + "), a factory reset clears it");
             }
-            done.formValuesJson = std::string("{\"") + kRemoveDeviceField + "\":\"\"}";
+            if (formField)
+                done.formValuesJson = std::string("{\"") + formField + "\":\"\"}";
             submitAction(std::move(done));
         });
     }
@@ -1199,6 +1247,10 @@ private:
             const bool fixedName = aggregator || publishable > 1;
             if (fixedName)
                 meta["fixedName"] = true;
+            // Behind a bridge, the device goes wherever the bridge goes: it
+            // cannot be removed on its own, and the UI warns for the bridge.
+            if (aggregator)
+                meta["parent"] = deviceExternalId(info.nodeId, 0);
             Json::StreamWriterBuilder builder;
             builder["indentation"] = "";
             device.metaJson = Json::writeString(builder, meta);
@@ -1369,6 +1421,17 @@ protected:
         share.hasForm = true;
         share.metaJson = R"({"placement":"card","kind":"open_dialog","requiresAck":true,"loadFormOnOpen":true})";
         caps.instanceActions.push_back(share);
+
+        // The device menu's Delete, by the name the UI looks for. Placed on
+        // the device, never in the card.
+        v1::AdapterActionDescriptor deviceDelete;
+        deviceDelete.id = kDeviceDeleteAction;
+        deviceDelete.label = "Remove from fabric";
+        deviceDelete.description = "Takes this fabric off the device's node and forgets it. A bridge goes with everything behind it.";
+        deviceDelete.danger = true;
+        deviceDelete.confirmJson = R"({"title":"Remove from fabric?","message":"The node leaves this fabric; a bridge takes every device behind it along. Continue?","okText":"Remove","cancelText":"Cancel","danger":true})";
+        deviceDelete.metaJson = R"({"placement":"device","kind":"command","requiresAck":true})";
+        caps.instanceActions.push_back(deviceDelete);
 
         v1::AdapterActionDescriptor remove;
         remove.id = kRemoveAction;
