@@ -2,6 +2,7 @@
 
 #include <controller/CommissioningWindowOpener.h>
 #include <controller/CurrentFabricRemover.h>
+#include <controller/WriteInteraction.h>
 #include <setup_payload/ManualSetupPayloadGenerator.h>
 #include <setup_payload/QRCodeSetupPayloadGenerator.h>
 
@@ -1245,6 +1246,25 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
             [shared](CHIP_ERROR err) { (*shared)(err); });
     }
 
+    void setNodeLabel(std::uint64_t nodeId, const std::string &label, std::function<void(CHIP_ERROR)> done)
+    {
+        auto shared = std::make_shared<std::function<void(CHIP_ERROR)>>(std::move(done));
+        auto text = std::make_shared<std::string>(label.substr(0, 32));
+        withSession(nodeId,
+            [text, shared](Messaging::ExchangeManager &, const SessionHandle &session) {
+                using namespace chip::app::Clusters;
+                auto onSuccess = [shared](const ConcreteAttributePath &) { (*shared)(CHIP_NO_ERROR); };
+                auto onError = [shared](const ConcreteAttributePath *, CHIP_ERROR err) { (*shared)(err); };
+                const CHIP_ERROR err = WriteAttribute<CharSpan>(session, 0, BasicInformation::Id,
+                                                                BasicInformation::Attributes::NodeLabel::Id,
+                                                                CharSpan(text->data(), text->size()), onSuccess, onError,
+                                                                NullOptional);
+                if (err != CHIP_NO_ERROR)
+                    (*shared)(err);
+            },
+            [shared](CHIP_ERROR err) { (*shared)(err); });
+    }
+
     // ---- sharing ------------------------------------------------------
 
     struct Share {
@@ -1478,6 +1498,14 @@ void Controller::setHueSaturation(std::uint64_t nodeId, std::uint16_t endpoint, 
 std::string Controller::compressedFabricId() const
 {
     return m_impl->compressedFabricIdHex;
+}
+
+void Controller::setNodeLabel(std::uint64_t nodeId, const std::string &label, std::function<void(CHIP_ERROR)> done)
+{
+    Impl *impl = m_impl.get();
+    impl->post([impl, nodeId, label, done = std::move(done)]() mutable {
+        impl->setNodeLabel(nodeId, label, std::move(done));
+    });
 }
 
 void Controller::setDeviceName(const std::string &deviceId, const std::string &name)

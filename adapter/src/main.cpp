@@ -697,9 +697,10 @@ protected:
         });
     }
 
-    // A name given in phi. Matter devices carry a writable NodeLabel, but
-    // a bridge's vendor tends to own it; the name stays with the fabric and
-    // shows wherever the adapter lists its nodes.
+    // A rename is accepted only where it lands on the device itself, so that
+    // every admin of the device sees the same name: a node phi commissioned
+    // directly gets its NodeLabel written. Whatever hangs behind a bridge is
+    // named by the bridge's own app, and the bridge is not ours to name.
     void onDeviceNameUpdate(const phi::DeviceNameUpdateRequest &request) override
     {
         std::uint64_t nodeId = 0;
@@ -708,8 +709,33 @@ protected:
             submit(makeResponse(request.cmdId, v1::CmdStatus::NotSupported, "Unknown Matter device"));
             return;
         }
-        m_controller.setDeviceName(request.deviceExternalId, trimmed(request.name));
-        submit(makeResponse(request.cmdId, v1::CmdStatus::Success, {}));
+        if (hasFixedName(request.deviceExternalId) || isBridge(nodeId)) {
+            submit(makeResponse(request.cmdId, v1::CmdStatus::NotSupported,
+                                "This device is named by its bridge; rename it in the maker's app"));
+            return;
+        }
+        if (!m_started) {
+            submit(makeResponse(request.cmdId, v1::CmdStatus::TemporarilyOffline, "Matter stack is not running"));
+            return;
+        }
+        const phi::CmdId cmdId = request.cmdId;
+        const std::string device = request.deviceExternalId;
+        const std::string name = trimmed(request.name).substr(0, 32);
+        m_controller.setNodeLabel(nodeId, name, [this, cmdId, device, name](CHIP_ERROR err) {
+            if (err != CHIP_NO_ERROR) {
+                submit(makeResponse(cmdId, v1::CmdStatus::Failure,
+                                    std::string("The device did not take the name: ") + phimatter::errorText(err)));
+                return;
+            }
+            m_controller.setDeviceName(device, name);
+            submit(makeResponse(cmdId, v1::CmdStatus::Success, {}));
+        });
+    }
+
+    bool isBridge(std::uint64_t nodeId) const
+    {
+        std::lock_guard<std::mutex> lock(m_specsMutex);
+        return m_bridgeNodes.count(nodeId) > 0;
     }
 
     void onDeviceEffectInvoke(const phi::DeviceEffectInvokeRequest &request) override
@@ -875,10 +901,20 @@ private:
         return std::vector<std::string>(it->second.begin(), it->second.end());
     }
 
-    void rememberDevice(std::uint64_t nodeId, const std::string &device)
+    void rememberDevice(std::uint64_t nodeId, const std::string &device, bool fixedName)
     {
         std::lock_guard<std::mutex> lock(m_specsMutex);
         m_devicesByNode[nodeId].insert(device);
+        if (fixedName)
+            m_fixedNames.insert(device);
+        else
+            m_fixedNames.erase(device);
+    }
+
+    bool hasFixedName(const std::string &device) const
+    {
+        std::lock_guard<std::mutex> lock(m_specsMutex);
+        return m_fixedNames.count(device) > 0;
     }
 
     void dropNode(std::uint64_t nodeId)
@@ -890,10 +926,12 @@ private:
         for (const std::string &device : it->second) {
             m_specs.erase(device);
             m_colors.erase(device);
+            m_fixedNames.erase(device);
         }
         m_devicesByNode.erase(it);
         m_nodeNames.erase(nodeId);
         m_nodeAddresses.erase(nodeId);
+        m_bridgeNodes.erase(nodeId);
     }
 
     // How a node is called in a list: the name phi's owner gave its gateway
@@ -1074,6 +1112,12 @@ private:
             m_nodeNames[info.nodeId] = shelf;
             if (!info.address.empty())
                 m_nodeAddresses[info.nodeId] = info.address;
+            const bool bridge = std::any_of(info.endpoints.begin(), info.endpoints.end(),
+                                            [](const auto &ep) { return hasDeviceType(ep, kAggregatorType); });
+            if (bridge)
+                m_bridgeNodes.insert(info.nodeId);
+            else
+                m_bridgeNodes.erase(info.nodeId);
         }
 
         for (const auto &ep : info.endpoints) {
@@ -1103,8 +1147,9 @@ private:
                 gateway.name = given;
             char nodeText[32];
             std::snprintf(nodeText, sizeof(nodeText), "0x%llx", static_cast<unsigned long long>(info.nodeId));
-            gateway.metaJson = std::string("{\"kind\":\"matter\",\"nodeId\":\"") + nodeText + "\",\"endpoint\":0}";
-            rememberDevice(info.nodeId, gateway.externalId);
+            gateway.metaJson = std::string("{\"kind\":\"matter\",\"nodeId\":\"") + nodeText + "\",\"endpoint\":0"
+                + (aggregator ? ",\"fixedName\":true" : "") + "}";
+            rememberDevice(info.nodeId, gateway.externalId, aggregator);
             std::string error;
             if (!sendDeviceUpdated(gateway, {connectivityChannel()}, &error)) {
                 log(phi::LogLevel::Error, phi::LogCategory::Internal, "Failed to publish %1: %2",
@@ -1148,6 +1193,12 @@ private:
             for (const std::uint32_t type : ep.deviceTypes)
                 types.append(type);
             meta["deviceTypes"] = types;
+            // A name can only be written to a node, not to one of its
+            // endpoints: what a bridge carries is named in the bridge's app,
+            // and a node with several devices cannot take one name for all.
+            const bool fixedName = aggregator || publishable > 1;
+            if (fixedName)
+                meta["fixedName"] = true;
             Json::StreamWriterBuilder builder;
             builder["indentation"] = "";
             device.metaJson = Json::writeString(builder, meta);
@@ -1173,6 +1224,10 @@ private:
                 std::lock_guard<std::mutex> lock(m_specsMutex);
                 m_specs[device.externalId] = specs;
                 m_devicesByNode[info.nodeId].insert(device.externalId);
+                if (fixedName)
+                    m_fixedNames.insert(device.externalId);
+                else
+                    m_fixedNames.erase(device.externalId);
             }
 
             std::string error;
@@ -1259,6 +1314,8 @@ private:
     std::map<std::uint64_t, std::set<std::string>> m_devicesByNode;
     std::map<std::uint64_t, std::string> m_nodeNames;
     std::map<std::uint64_t, std::string> m_nodeAddresses;
+    std::set<std::uint64_t> m_bridgeNodes;
+    std::set<std::string> m_fixedNames;
     std::uint16_t m_listenPort = 0;
     std::string m_fabricLabel = kDefaultFabricLabel;
     bool m_nodesLabeled = false;

@@ -100,8 +100,12 @@ public:
     // The compressed fabric id as 16 hex digits, the fabric's public name.
     std::string compressedFabricId() const;
 
-    // Names people gave devices in phi, kept in the registry so that lists
-    // can show them; keyed by the device id ("n1-e0").
+    // Writes the node's own label (Basic Information, NodeLabel): the name
+    // the device itself carries from then on. At most 32 bytes.
+    void setNodeLabel(std::uint64_t nodeId, const std::string &label, std::function<void(CHIP_ERROR)> done);
+
+    // Names written to devices, kept in the registry so that lists can show
+    // them without a read; keyed by the device id ("n1-e0").
     void setDeviceName(const std::string &deviceId, const std::string &name);
     std::string deviceName(const std::string &deviceId) const;
 
