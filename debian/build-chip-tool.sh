@@ -48,8 +48,11 @@ export PW_ENVIRONMENT_ROOT=$work/pw-env
 export CIPD_CACHE_DIR=$work/cipd-cache
 mkdir -p "$HOME" "$PW_ENVIRONMENT_ROOT" "$CIPD_CACHE_DIR"
 
+# --force re-checks out every working tree: a clone interrupted between
+# registering a submodule and populating it leaves the commit recorded and the
+# directory empty, and a plain update sees nothing to do.
 cd "$src"
-python3 scripts/checkout_submodules.py --shallow --platform linux --jobs "$jobs"
+python3 scripts/checkout_submodules.py --shallow --force --platform linux --jobs "$jobs"
 
 # Pigweed's bootstrap: gn, ninja, a Python of its own and zap arrive over CIPD.
 # Whether CIPD has every one of them for this architecture is the first thing
