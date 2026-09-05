@@ -1,0 +1,32 @@
+Format: https://www.debian.org/dep5/1.0/
+Upstream-Name: phi-adapter-matter
+Source: https://phisys.com
+
+Files: *
+Copyright: 2026 Phisys Ltd. (Switzerland)
+License: LicenseRef-Phisys-NonCommercial-1.0
+ Copyright (c) 2026 Phisys Ltd. (Switzerland)
+ .
+ Licensed by Phisys Ltd. (Switzerland).
+ .
+ Free for private and non-commercial use.
+ For this license, schools, universities, and non-profit organizations
+ are treated as private/non-commercial users.
+ .
+ Redistribution is permitted provided this copyright and license notice
+ are retained.
+ .
+ Commercial use requires a separate commercial license from
+ Phisys Ltd. (Switzerland).
+ .
+ Commercial licensing terms:
+ https://phi-systems.tech/en/license
+
+Files: usr/lib/phi/matter/chip-tool
+Copyright: 2020-2026 Project CHIP Authors
+License: Apache-2.0
+Comment:
+ Built from connectedhomeip at the tag named in debian/CHIP_VERSION. The
+ binary is upstream's code under upstream's licence; this package only builds
+ and ships it. The full text of the Apache License 2.0 is at
+ /usr/share/common-licenses/Apache-2.0 on Debian systems.

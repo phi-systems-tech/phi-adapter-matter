@@ -1,0 +1,35 @@
+#!/usr/bin/make -f
+
+# connectedhomeip is fetched at build time at a pinned tag rather than vendored:
+# the checkout with its Linux submodules is several gigabytes, and every byte of
+# it is upstream's, signed by upstream's tags. What we own is the tag in
+# debian/CHIP_VERSION, the build script beside this file, and the list of what
+# comes out.
+#
+# The same trade phi-nodejs and phi-z2m-runtime make: the build needs the
+# network, and in exchange the repository carries no binaries.
+
+CHIP_VERSION := $(shell cat debian/CHIP_VERSION)
+WORK := $(CURDIR)/debian/upstream
+DEST := debian/phi-adapter-matter
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	debian/build-chip-tool.sh $(CHIP_VERSION) $(WORK)
+
+override_dh_auto_install:
+	install -D -m 0755 $(WORK)/out/chip-tool/chip-tool \
+		$(DEST)/usr/lib/phi/matter/chip-tool
+	install -D -m 0644 $(WORK)/build-info.txt \
+		$(DEST)/usr/share/doc/phi-adapter-matter/CHIP-BUILD-INFO
+
+# The checkout is kept across cleans unless asked otherwise: a clean that
+# threw away several gigabytes of upstream source would make every rebuild a
+# fresh download. `PHI_DROP_CHIP_SOURCE=1 debian/rules clean` removes it.
+override_dh_auto_clean:
+	rm -rf $(WORK)/out $(WORK)/pw-env $(WORK)/home $(WORK)/cipd-cache $(WORK)/build-info.txt
+ifneq ($(PHI_DROP_CHIP_SOURCE),)
+	rm -rf $(WORK)
+endif

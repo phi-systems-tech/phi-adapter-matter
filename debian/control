@@ -1,0 +1,41 @@
+Source: phi-adapter-matter
+Section: libs
+Priority: optional
+Maintainer: Marius Schumacher <marius.schumacher@phisys.com>
+Build-Depends:
+ debhelper-compat (= 13),
+ ca-certificates,
+ git,
+ gcc,
+ g++,
+ pkg-config,
+ ninja-build,
+ python3-venv,
+ python3-dev,
+ python3-pip,
+ unzip,
+ libssl-dev,
+ libdbus-1-dev,
+ libglib2.0-dev,
+ libavahi-client-dev,
+ libgirepository1.0-dev,
+ libcairo2-dev,
+ libreadline-dev
+Standards-Version: 4.7.0
+Rules-Requires-Root: no
+Homepage: https://phisys.com
+
+Package: phi-adapter-matter
+Architecture: any
+Depends:
+ ${shlibs:Depends},
+ ${misc:Depends}
+Description: PHI Matter controller adapter, built on connectedhomeip
+ The southbound Matter controller for PHI core, built on the CSA's reference
+ implementation. One adapter for every Matter device, whether it hangs on
+ Thread, Wi-Fi or Ethernet.
+ .
+ At this stage the package carries chip-tool alone: the SDK fetched at a pinned
+ tag and built reproducibly for this architecture, which is the part of the
+ work that can fail and therefore comes first. The adapter sidecar is added as
+ a second target beside it once the build is proven.

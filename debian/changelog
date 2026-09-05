@@ -1,0 +1,12 @@
+phi-adapter-matter (0.0.1+chip1.5.1.0-1) trixie; urgency=medium
+
+  * Initial package: connectedhomeip fetched at v1.5.1.0 and chip-tool built
+    from it for this architecture. No adapter code yet - the build is the
+    milestone, because a stack that cannot be packaged is not a stack.
+  * The CHIP tag is part of the package version, so what was built is visible
+    in apt and not only in a file inside the package.
+  * Build time and binary size are recorded into the package under
+    /usr/share/doc, because those two numbers decide whether the sbuild host
+    and a Pi-class machine can carry this.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sat, 05 Sep 2026 10:00:00 +0200
