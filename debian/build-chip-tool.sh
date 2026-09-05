@@ -55,10 +55,14 @@ python3 scripts/checkout_submodules.py --shallow --platform linux --jobs "$jobs"
 # Whether CIPD has every one of them for this architecture is the first thing
 # this build proves or disproves, which is why the log is kept verbose.
 #
+# `-p build` limits the pip step to what the code generators need. The
+# default is every platform's requirements at once, and the Zephyr and ESP-IDF
+# sets pin conflicting versions - that combination does not resolve.
+#
 # bootstrap.sh is written for an interactive shell and trips over `set -u`.
 set +u
 # shellcheck disable=SC1091
-source scripts/bootstrap.sh
+source scripts/bootstrap.sh -p build
 set -u
 
 # One target, release flags. This is what upstream's gn_build_example.sh does,

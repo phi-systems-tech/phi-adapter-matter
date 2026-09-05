@@ -25,11 +25,12 @@ override_dh_auto_install:
 	install -D -m 0644 $(WORK)/build-info.txt \
 		$(DEST)/usr/share/doc/phi-adapter-matter/CHIP-BUILD-INFO
 
-# The checkout is kept across cleans unless asked otherwise: a clean that
-# threw away several gigabytes of upstream source would make every rebuild a
-# fresh download. `PHI_DROP_CHIP_SOURCE=1 debian/rules clean` removes it.
+# The checkout and the CIPD cache are kept across cleans unless asked
+# otherwise: a clean that threw away several gigabytes of upstream source and
+# the toolchain downloads would make every rebuild a fresh download.
+# `PHI_DROP_CHIP_SOURCE=1 debian/rules clean` removes both.
 override_dh_auto_clean:
-	rm -rf $(WORK)/out $(WORK)/pw-env $(WORK)/home $(WORK)/cipd-cache $(WORK)/build-info.txt
+	rm -rf $(WORK)/out $(WORK)/pw-env $(WORK)/home $(WORK)/build-info.txt
 ifneq ($(PHI_DROP_CHIP_SOURCE),)
 	rm -rf $(WORK)
 endif

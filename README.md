@@ -48,9 +48,10 @@ source comes from upstream's tag, the toolchain from CIPD. Everything lands
 under `debian/upstream/` - checkout, Pigweed environment, CIPD cache, a HOME
 of its own - and nothing outside it.
 
-`debian/rules clean` keeps the checkout, because throwing away several
-gigabytes of upstream source would turn every rebuild into a fresh download.
-`PHI_DROP_CHIP_SOURCE=1 debian/rules clean` removes it too.
+`debian/rules clean` keeps the checkout and the CIPD cache, because throwing
+away several gigabytes of upstream source and toolchain would turn every
+rebuild into a fresh download. `PHI_DROP_CHIP_SOURCE=1 debian/rules clean`
+removes them too.
 
 Parallelism follows `nproc`; `PHI_CHIP_JOBS=<n>` caps it for a machine that
 runs the stack while it builds, since one CHIP translation unit needs the
