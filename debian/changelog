@@ -1,12 +1,15 @@
-phi-adapter-matter (0.0.1+chip1.5.1.0-1) trixie; urgency=medium
+phi-adapter-matter (0.0.2+chip1.5.1.0-1) trixie; urgency=medium
 
-  * Initial package: connectedhomeip fetched at v1.5.1.0 and chip-tool built
-    from it for this architecture. No adapter code yet - the build is the
-    milestone, because a stack that cannot be packaged is not a stack.
-  * The CHIP tag is part of the package version, so what was built is visible
-    in apt and not only in a file inside the package.
-  * Build time and binary size are recorded into the package under
-    /usr/share/doc, because those two numbers decide whether the sbuild host
-    and a Pi-class machine can carry this.
+  * The controller sidecar, phi_adapter_matter_ipc, built as a second gn
+    target beside chip-tool: one fabric per instance, commissioning over the
+    network with a pairing code, endpoints published as devices with the
+    channels their clusters carry (on/off, brightness, color temperature,
+    color, motion, contact, temperature, humidity, illuminance, battery).
+  * A Connectivity channel on every device, set by the node's subscription,
+    and a Remove action that takes the fabric off the device and forgets it.
+  * A fresh fabric draws a random operational node id; the UDP port is an
+    instance setting so two cores on one host do not collide.
+  * Depends on phi-adapter-sdk and avahi-daemon (mDNS through the platform).
 
- -- Marius Schumacher <marius.schumacher@phisys.com>  Sat, 05 Sep 2026 10:00:00 +0200
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sat, 05 Sep 2026 16:10:00 +0200
+
