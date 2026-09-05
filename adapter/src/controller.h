@@ -46,10 +46,18 @@ struct Options {
     bool allowUntrustedAttestation = false;
 };
 
+// One reported attribute, reduced to what a channel needs.
+struct AttributeValue {
+    bool isNull = false;
+    bool boolean = false;
+    double number = 0.0;
+};
+
 struct Callbacks {
     std::function<void(LogLevel, const std::string &)> log;
-    // A subscribed OnOff attribute reported a value.
-    std::function<void(std::uint64_t nodeId, std::uint16_t endpoint, bool on)> onOff;
+    // A subscribed attribute reported a value.
+    std::function<void(std::uint64_t nodeId, std::uint16_t endpoint, std::uint32_t cluster, std::uint32_t attribute,
+                       const AttributeValue &value)> attribute;
     // A node's subscription came up or went down.
     std::function<void(std::uint64_t nodeId, bool reachable)> reachable;
     // The node's endpoint list changed: a bridge gained or lost a device.
@@ -85,11 +93,14 @@ public:
     // the labels a bridge attaches to its endpoints.
     void describe(std::uint64_t nodeId, std::function<void(const NodeInfo &, CHIP_ERROR)> done);
 
-    // One wildcard subscription per node on the OnOff attribute, kept alive
-    // by the SDK's resubscription policy.
-    void subscribeOnOff(std::uint64_t nodeId);
+    // One wildcard subscription per node on the attributes channels are made
+    // of, kept alive by the SDK's resubscription policy.
+    void subscribe(std::uint64_t nodeId);
 
     void setOnOff(std::uint64_t nodeId, std::uint16_t endpoint, bool on,
+                  std::function<void(CHIP_ERROR)> done);
+    // Level 0..254 with OnOff coupled, the way a dimmer expects it.
+    void setLevel(std::uint64_t nodeId, std::uint16_t endpoint, std::uint8_t level,
                   std::function<void(CHIP_ERROR)> done);
 
     // Runs a task on the Matter thread.

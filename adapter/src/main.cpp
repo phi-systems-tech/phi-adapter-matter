@@ -4,8 +4,12 @@
 // setup code, every endpoint that serves OnOff becomes a phi device with a
 // power channel, and one subscription per node keeps the state current.
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
+#include <optional>
+#include <unordered_map>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
@@ -28,7 +32,6 @@ namespace {
 
 constexpr const char kPluginType[] = "matter";
 constexpr const char kDisplayName[] = "Matter";
-constexpr const char kOnOffChannel[] = "onoff";
 constexpr const char kCommissionAction[] = "commission";
 constexpr const char kPairingCodeField[] = "pairingCode";
 constexpr const char kAllowUntrustedField[] = "allowUntrustedAttestation";
@@ -116,6 +119,8 @@ phi::LogLevel toSdkLevel(phimatter::LogLevel level)
     return phi::LogLevel::Info;
 }
 
+bool isSensorType(std::uint32_t type);
+
 // Matter device types, the ones that decide a phi device class.
 enum DeviceType : std::uint32_t {
     OnOffLight = 0x0100,
@@ -129,6 +134,8 @@ enum DeviceType : std::uint32_t {
 v1::DeviceClass deviceClassFor(const std::vector<std::uint32_t> &deviceTypes)
 {
     for (const std::uint32_t type : deviceTypes) {
+        if (isSensorType(type))
+            return v1::DeviceClass::Sensor;
         switch (type) {
         case OnOffLight:
         case DimmableLight:
@@ -145,7 +152,128 @@ v1::DeviceClass deviceClassFor(const std::vector<std::uint32_t> &deviceTypes)
     return v1::DeviceClass::Switch;
 }
 
-constexpr std::uint32_t kOnOffClusterId = 0x0006;
+// Clusters and attributes the channel model is made of.
+namespace cluster {
+constexpr std::uint32_t OnOff = 0x0006;
+constexpr std::uint32_t LevelControl = 0x0008;
+constexpr std::uint32_t PowerSource = 0x002F;
+constexpr std::uint32_t BooleanState = 0x0045;
+constexpr std::uint32_t IlluminanceMeasurement = 0x0400;
+constexpr std::uint32_t TemperatureMeasurement = 0x0402;
+constexpr std::uint32_t RelativeHumidityMeasurement = 0x0405;
+constexpr std::uint32_t OccupancySensing = 0x0406;
+} // namespace cluster
+namespace attribute {
+constexpr std::uint32_t OnOff = 0x0000;
+constexpr std::uint32_t CurrentLevel = 0x0000;
+constexpr std::uint32_t BatPercentRemaining = 0x000C;
+constexpr std::uint32_t StateValue = 0x0000;
+constexpr std::uint32_t MeasuredValue = 0x0000;
+constexpr std::uint32_t Occupancy = 0x0000;
+} // namespace attribute
+
+constexpr std::uint32_t kAggregatorType = 0x000E;
+constexpr std::uint32_t kOccupancySensorType = 0x0107;
+constexpr std::uint32_t kContactSensorType = 0x0015;
+constexpr std::uint32_t kTemperatureSensorType = 0x0302;
+constexpr std::uint32_t kHumiditySensorType = 0x0307;
+constexpr std::uint32_t kLightSensorType = 0x0106;
+
+// One phi channel: which attribute feeds it and how it is described.
+struct ChannelSpec {
+    const char *id;
+    std::uint32_t cluster;
+    std::uint32_t attribute;
+    v1::ChannelKind kind;
+    v1::ChannelDataType dataType;
+    v1::ChannelFlags flags;
+    const char *unit;
+    double minValue;
+    double maxValue;
+    double stepValue;
+};
+
+bool hasCluster(const phimatter::EndpointInfo &ep, std::uint32_t cluster)
+{
+    return std::find(ep.serverClusters.begin(), ep.serverClusters.end(), cluster) != ep.serverClusters.end();
+}
+
+bool hasDeviceType(const phimatter::EndpointInfo &ep, std::uint32_t type)
+{
+    return std::find(ep.deviceTypes.begin(), ep.deviceTypes.end(), type) != ep.deviceTypes.end();
+}
+
+std::vector<ChannelSpec> channelsFor(const phimatter::EndpointInfo &ep)
+{
+    using v1::ChannelDataType;
+    using v1::ChannelKind;
+    std::vector<ChannelSpec> out;
+    if (hasCluster(ep, cluster::OnOff))
+        out.push_back({"onoff", cluster::OnOff, attribute::OnOff, ChannelKind::PowerOnOff, ChannelDataType::Bool,
+                       v1::kChannelFlagDefaultWrite, "", 0, 0, 0});
+    if (hasCluster(ep, cluster::LevelControl))
+        out.push_back({"brightness", cluster::LevelControl, attribute::CurrentLevel, ChannelKind::Brightness,
+                       ChannelDataType::Float, v1::kChannelFlagDefaultWrite, "%", 0, 100, 1});
+    if (hasCluster(ep, cluster::OccupancySensing))
+        out.push_back({"motion", cluster::OccupancySensing, attribute::Occupancy, ChannelKind::Motion, ChannelDataType::Bool,
+                       v1::kChannelFlagDefaultRead, "", 0, 0, 0});
+    if (hasCluster(ep, cluster::BooleanState)) {
+        // Boolean State is what a contact sensor reports. Some bridges use it
+        // for occupancy sensors too, and then the device type says so.
+        const bool occupancy = hasDeviceType(ep, kOccupancySensorType) && !hasCluster(ep, cluster::OccupancySensing);
+        out.push_back({occupancy ? "motion" : "contact", cluster::BooleanState, attribute::StateValue,
+                       occupancy ? ChannelKind::Motion : ChannelKind::Contact, ChannelDataType::Bool,
+                       v1::kChannelFlagDefaultRead, "", 0, 0, 0});
+    }
+    if (hasCluster(ep, cluster::TemperatureMeasurement))
+        out.push_back({"temperature", cluster::TemperatureMeasurement, attribute::MeasuredValue, ChannelKind::Temperature,
+                       ChannelDataType::Float, v1::kChannelFlagDefaultRead, "C", -50, 150, 0.01});
+    if (hasCluster(ep, cluster::RelativeHumidityMeasurement))
+        out.push_back({"humidity", cluster::RelativeHumidityMeasurement, attribute::MeasuredValue, ChannelKind::Humidity,
+                       ChannelDataType::Float, v1::kChannelFlagDefaultRead, "%", 0, 100, 0.01});
+    if (hasCluster(ep, cluster::IlluminanceMeasurement))
+        out.push_back({"illuminance", cluster::IlluminanceMeasurement, attribute::MeasuredValue, ChannelKind::Illuminance,
+                       ChannelDataType::Float, v1::kChannelFlagDefaultRead, "lx", 0, 100000, 1});
+    // Power Source on the root endpoint describes the mains; on a device
+    // endpoint it is the battery.
+    if (ep.endpoint != 0 && hasCluster(ep, cluster::PowerSource))
+        out.push_back({"battery", cluster::PowerSource, attribute::BatPercentRemaining, ChannelKind::Battery,
+                       ChannelDataType::Int, v1::kChannelFlagDefaultRead, "%", 0, 100, 1});
+    return out;
+}
+
+// The reported attribute as the channel's value; monostate when the device
+// reported null.
+v1::ScalarValue channelValue(const ChannelSpec &spec, const phimatter::AttributeValue &value)
+{
+    if (value.isNull)
+        return v1::ScalarValue{};
+    switch (spec.kind) {
+    case v1::ChannelKind::PowerOnOff:
+    case v1::ChannelKind::Motion:
+    case v1::ChannelKind::Contact:
+        return v1::ScalarValue(value.boolean);
+    case v1::ChannelKind::Brightness:
+        return v1::ScalarValue(std::round(value.number / 254.0 * 1000.0) / 10.0);
+    case v1::ChannelKind::Battery:
+        // Half-percent units.
+        return v1::ScalarValue(static_cast<std::int64_t>(std::lround(value.number / 2.0)));
+    case v1::ChannelKind::Temperature:
+    case v1::ChannelKind::Humidity:
+        return v1::ScalarValue(value.number / 100.0);
+    case v1::ChannelKind::Illuminance:
+        // 10000 * log10(lux) + 1, 0 meaning "too low to measure".
+        return v1::ScalarValue(value.number <= 0 ? 0.0 : std::pow(10.0, (value.number - 1.0) / 10000.0));
+    default:
+        return v1::ScalarValue(value.number);
+    }
+}
+
+bool isSensorType(std::uint32_t type)
+{
+    return type == kOccupancySensorType || type == kContactSensorType || type == kTemperatureSensorType
+        || type == kHumiditySensorType || type == kLightSensorType;
+}
 
 std::string deviceExternalId(std::uint64_t nodeId, std::uint16_t endpoint)
 {
@@ -186,8 +314,16 @@ protected:
         callbacks.log = [this](phimatter::LogLevel level, const std::string &message) {
             log(toSdkLevel(level), phi::LogCategory::Protocol, message, {}, "matter.chip");
         };
-        callbacks.onOff = [this](std::uint64_t nodeId, std::uint16_t endpoint, bool on) {
-            sendChannelStateUpdated(deviceExternalId(nodeId, endpoint), kOnOffChannel, v1::ScalarValue(on), nowMs());
+        callbacks.attribute = [this](std::uint64_t nodeId, std::uint16_t endpoint, std::uint32_t clusterId,
+                                     std::uint32_t attributeId, const phimatter::AttributeValue &value) {
+            const std::string device = deviceExternalId(nodeId, endpoint);
+            const std::optional<ChannelSpec> spec = findSpec(device, clusterId, attributeId);
+            if (!spec)
+                return;
+            const v1::ScalarValue scalar = channelValue(*spec, value);
+            if (std::holds_alternative<std::monostate>(scalar))
+                return;
+            sendChannelStateUpdated(device, spec->id, scalar, nowMs());
         };
         callbacks.topologyChanged = [this](std::uint64_t nodeId) {
             char text[80];
@@ -237,32 +373,56 @@ protected:
     {
         std::uint64_t nodeId = 0;
         std::uint16_t endpoint = 0;
-        if (request.channelExternalId != kOnOffChannel
-            || !parseDeviceExternalId(request.deviceExternalId, &nodeId, &endpoint)) {
-            submit(makeResponse(request.cmdId, v1::CmdStatus::NotSupported, "Unknown Matter channel"));
-            return;
-        }
-        if (!request.hasScalarValue || !std::holds_alternative<bool>(request.value)) {
-            submit(makeResponse(request.cmdId, v1::CmdStatus::InvalidArgument, "OnOff wants a boolean"));
+        if (!parseDeviceExternalId(request.deviceExternalId, &nodeId, &endpoint)) {
+            submit(makeResponse(request.cmdId, v1::CmdStatus::NotSupported, "Unknown Matter device"));
             return;
         }
         if (!m_started) {
             submit(makeResponse(request.cmdId, v1::CmdStatus::TemporarilyOffline, "Matter stack is not running"));
             return;
         }
-        const bool on = std::get<bool>(request.value);
         const phi::CmdId cmdId = request.cmdId;
         const std::string device = request.deviceExternalId;
-        m_controller.setOnOff(nodeId, endpoint, on, [this, cmdId, device, on](CHIP_ERROR err) {
+        const std::string channel = request.channelExternalId;
+
+        auto finish = [this, cmdId, device, channel](CHIP_ERROR err, v1::ScalarValue applied) {
             if (err == CHIP_NO_ERROR) {
                 v1::CmdResponse resp = makeResponse(cmdId, v1::CmdStatus::Success, {});
-                resp.finalValue = v1::ScalarValue(on);
+                resp.finalValue = applied;
                 submit(std::move(resp));
-                sendChannelStateUpdated(device, kOnOffChannel, v1::ScalarValue(on), nowMs());
+                sendChannelStateUpdated(device, channel, applied, nowMs());
             } else {
                 submit(makeResponse(cmdId, v1::CmdStatus::Failure, phimatter::errorText(err)));
             }
-        });
+        };
+
+        if (channel == "onoff") {
+            if (!request.hasScalarValue || !std::holds_alternative<bool>(request.value)) {
+                submit(makeResponse(cmdId, v1::CmdStatus::InvalidArgument, "OnOff wants a boolean"));
+                return;
+            }
+            const bool on = std::get<bool>(request.value);
+            m_controller.setOnOff(nodeId, endpoint, on, [finish, on](CHIP_ERROR err) { finish(err, v1::ScalarValue(on)); });
+            return;
+        }
+        if (channel == "brightness") {
+            double percent = 0.0;
+            if (request.hasScalarValue && std::holds_alternative<double>(request.value))
+                percent = std::get<double>(request.value);
+            else if (request.hasScalarValue && std::holds_alternative<std::int64_t>(request.value))
+                percent = static_cast<double>(std::get<std::int64_t>(request.value));
+            else {
+                submit(makeResponse(cmdId, v1::CmdStatus::InvalidArgument, "Brightness wants a number 0..100"));
+                return;
+            }
+            percent = std::min(100.0, std::max(0.0, percent));
+            const auto level = static_cast<std::uint8_t>(std::lround(percent / 100.0 * 254.0));
+            m_controller.setLevel(nodeId, endpoint, level, [finish, percent](CHIP_ERROR err) {
+                finish(err, v1::ScalarValue(percent));
+            });
+            return;
+        }
+        submit(makeResponse(cmdId, v1::CmdStatus::NotSupported, "Channel is read-only"));
     }
 
     void onAdapterActionInvoke(const phi::AdapterActionInvokeRequest &request) override
@@ -358,7 +518,7 @@ private:
             }
             publishNode(info);
             if (subscribe)
-                m_controller.subscribeOnOff(info.nodeId);
+                m_controller.subscribe(info.nodeId);
         });
     }
 
@@ -387,10 +547,10 @@ private:
             ep.product = trimmed(ep.product);
         }
 
-        std::size_t onOffEndpoints = 0;
+        std::size_t publishable = 0;
         for (const auto &ep : info.endpoints) {
-            if (std::find(ep.serverClusters.begin(), ep.serverClusters.end(), kOnOffClusterId) != ep.serverClusters.end())
-                ++onOffEndpoints;
+            if (!channelsFor(ep).empty())
+                ++publishable;
         }
 
         const std::string nodeName = !info.label.empty() ? info.label : info.product;
@@ -405,10 +565,13 @@ private:
             log(phi::LogLevel::Info, phi::LogCategory::Device, text, {}, "matter.node.endpoint");
         }
 
-        // A node with nothing to switch is still a member of the fabric; a
-        // bridge without devices is the usual case. Show it as a gateway so
-        // that its presence is visible, channels or not.
-        if (onOffEndpoints == 0) {
+        // A bridge is shown as a gateway beside the devices it carries, and a
+        // node with nothing to report is shown as one too: membership in the
+        // fabric stays visible, channels or not.
+        const bool aggregator = std::any_of(info.endpoints.begin(), info.endpoints.end(), [](const auto &ep) {
+            return hasDeviceType(ep, kAggregatorType);
+        });
+        if (publishable == 0 || aggregator) {
             v1::Device gateway;
             gateway.externalId = deviceExternalId(info.nodeId, 0);
             gateway.deviceClass = v1::DeviceClass::Gateway;
@@ -427,8 +590,10 @@ private:
                 ++published;
             }
         }
+
         for (const auto &ep : info.endpoints) {
-            if (std::find(ep.serverClusters.begin(), ep.serverClusters.end(), kOnOffClusterId) == ep.serverClusters.end())
+            const std::vector<ChannelSpec> specs = channelsFor(ep);
+            if (specs.empty())
                 continue;
 
             v1::Device device;
@@ -440,7 +605,7 @@ private:
             device.flags = v1::DeviceFlag::Wireless;
             if (!ep.label.empty()) {
                 device.name = ep.label;
-            } else if (onOffEndpoints > 1) {
+            } else if (publishable > 1) {
                 device.name = nodeName + " " + std::to_string(ep.endpoint);
             } else {
                 device.name = nodeName;
@@ -462,15 +627,27 @@ private:
             builder["indentation"] = "";
             device.metaJson = Json::writeString(builder, meta);
 
-            v1::Channel power;
-            power.externalId = kOnOffChannel;
-            power.name = "Power";
-            power.kind = v1::ChannelKind::PowerOnOff;
-            power.dataType = v1::ChannelDataType::Bool;
-            power.flags = v1::kChannelFlagDefaultWrite;
-
             v1::ChannelList channels;
-            channels.push_back(power);
+            for (const ChannelSpec &spec : specs) {
+                v1::Channel channel;
+                channel.externalId = spec.id;
+                channel.name = channelName(spec);
+                channel.kind = spec.kind;
+                channel.dataType = spec.dataType;
+                channel.flags = spec.flags;
+                channel.unit = spec.unit;
+                channel.minValue = spec.minValue;
+                channel.maxValue = spec.maxValue;
+                channel.stepValue = spec.stepValue;
+                channels.push_back(channel);
+                if (spec.kind == v1::ChannelKind::Battery)
+                    device.flags = device.flags | v1::DeviceFlag::Battery;
+            }
+            {
+                std::lock_guard<std::mutex> lock(m_specsMutex);
+                m_specs[device.externalId] = specs;
+            }
+
             std::string error;
             if (!sendDeviceUpdated(device, channels, &error)) {
                 log(phi::LogLevel::Error, phi::LogCategory::Internal, "Failed to publish %1: %2",
@@ -485,6 +662,35 @@ private:
                       static_cast<unsigned long long>(info.nodeId), info.vendor.c_str(), info.product.c_str(),
                       info.endpoints.size(), published);
         log(phi::LogLevel::Info, phi::LogCategory::Device, text, {}, "matter.node.published");
+    }
+
+    static const char *channelName(const ChannelSpec &spec)
+    {
+        switch (spec.kind) {
+        case v1::ChannelKind::PowerOnOff: return "Power";
+        case v1::ChannelKind::Brightness: return "Brightness";
+        case v1::ChannelKind::Motion: return "Motion";
+        case v1::ChannelKind::Contact: return "Contact";
+        case v1::ChannelKind::Temperature: return "Temperature";
+        case v1::ChannelKind::Humidity: return "Humidity";
+        case v1::ChannelKind::Illuminance: return "Illuminance";
+        case v1::ChannelKind::Battery: return "Battery";
+        default: return spec.id;
+        }
+    }
+
+    // A copy, because the map may be rewritten on the host thread meanwhile.
+    std::optional<ChannelSpec> findSpec(const std::string &device, std::uint32_t clusterId, std::uint32_t attributeId) const
+    {
+        std::lock_guard<std::mutex> lock(m_specsMutex);
+        const auto it = m_specs.find(device);
+        if (it == m_specs.end())
+            return std::nullopt;
+        for (const ChannelSpec &spec : it->second) {
+            if (spec.cluster == clusterId && spec.attribute == attributeId)
+                return spec;
+        }
+        return std::nullopt;
     }
 
     static v1::CmdResponse makeResponse(phi::CmdId cmdId, v1::CmdStatus status, std::string error)
@@ -515,6 +721,11 @@ private:
 
     std::string m_stateRoot;
     phimatter::Controller m_controller;
+    // Channels per published device, by device external id. Written on the
+    // host thread in publishNode, read on the Matter thread by the attribute
+    // callback; both under the lock.
+    mutable std::mutex m_specsMutex;
+    std::unordered_map<std::string, std::vector<ChannelSpec>> m_specs;
     bool m_started = false;
     bool m_allowUntrusted = false;
 };

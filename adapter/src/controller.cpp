@@ -827,13 +827,58 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
                     self->callbacks.topologyChanged(nodeId);
                 return;
             }
-            if (path.mClusterId != OnOff::Id || path.mAttributeId != OnOff::Attributes::OnOff::Id)
+            AttributeValue value;
+            if (!decode(path, *data, value))
                 return;
-            bool on = false;
-            if (DataModel::Decode(*data, on) != CHIP_NO_ERROR)
-                return;
-            if (self->callbacks.onOff)
-                self->callbacks.onOff(nodeId, path.mEndpointId, on);
+            if (self->callbacks.attribute)
+                self->callbacks.attribute(nodeId, path.mEndpointId, path.mClusterId, path.mAttributeId, value);
+        }
+
+        template <typename T>
+        static bool decodeNullable(TLV::TLVReader &data, AttributeValue &out)
+        {
+            DataModel::Nullable<T> decoded;
+            if (DataModel::Decode(data, decoded) != CHIP_NO_ERROR)
+                return false;
+            out.isNull = decoded.IsNull();
+            out.number = decoded.IsNull() ? 0.0 : static_cast<double>(decoded.Value());
+            return true;
+        }
+
+        static bool decode(const ConcreteDataAttributePath &path, TLV::TLVReader &data, AttributeValue &out)
+        {
+            using namespace chip::app::Clusters;
+            const ClusterId cluster = path.mClusterId;
+            const AttributeId attribute = path.mAttributeId;
+            if ((cluster == OnOff::Id && attribute == OnOff::Attributes::OnOff::Id)
+                || (cluster == BooleanState::Id && attribute == BooleanState::Attributes::StateValue::Id)) {
+                bool b = false;
+                if (DataModel::Decode(data, b) != CHIP_NO_ERROR)
+                    return false;
+                out.boolean = b;
+                out.number = b ? 1.0 : 0.0;
+                return true;
+            }
+            if (cluster == OccupancySensing::Id && attribute == OccupancySensing::Attributes::Occupancy::Id) {
+                OccupancySensing::Attributes::Occupancy::TypeInfo::DecodableType bits;
+                if (DataModel::Decode(data, bits) != CHIP_NO_ERROR)
+                    return false;
+                out.boolean = bits.Has(OccupancySensing::OccupancyBitmap::kOccupied);
+                out.number = out.boolean ? 1.0 : 0.0;
+                return true;
+            }
+            if (cluster == PowerSource::Id && attribute == PowerSource::Attributes::BatPercentRemaining::Id)
+                return decodeNullable<std::uint8_t>(data, out);
+            if (cluster == LevelControl::Id && attribute == LevelControl::Attributes::CurrentLevel::Id)
+                return decodeNullable<std::uint8_t>(data, out);
+            if (cluster == TemperatureMeasurement::Id && attribute == TemperatureMeasurement::Attributes::MeasuredValue::Id)
+                return decodeNullable<std::int16_t>(data, out);
+            if (cluster == RelativeHumidityMeasurement::Id
+                && attribute == RelativeHumidityMeasurement::Attributes::MeasuredValue::Id)
+                return decodeNullable<std::uint16_t>(data, out);
+            if (cluster == IlluminanceMeasurement::Id && attribute == IlluminanceMeasurement::Attributes::MeasuredValue::Id)
+                return decodeNullable<std::uint16_t>(data, out);
+            return false;
         }
 
         void OnReportEnd() override
@@ -882,7 +927,7 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
 
     std::map<std::uint64_t, std::unique_ptr<Subscription>> subscriptions;
 
-    void subscribeOnOff(std::uint64_t nodeId)
+    void subscribe(std::uint64_t nodeId)
     {
         if (subscriptions.count(nodeId))
             return;
@@ -895,12 +940,23 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
         withSession(nodeId,
             [this, raw](Messaging::ExchangeManager &exchangeMgr, const SessionHandle &session) {
                 using namespace chip::app::Clusters;
-                auto *paths = new AttributePathParams[2];
+                constexpr std::size_t kPathCount = 9;
+                auto *paths = new AttributePathParams[kPathCount];
                 paths[0] = AttributePathParams(kInvalidEndpointId, OnOff::Id, OnOff::Attributes::OnOff::Id);
-                paths[1] = AttributePathParams(0, Descriptor::Id, Descriptor::Attributes::PartsList::Id);
+                paths[1] = AttributePathParams(kInvalidEndpointId, BooleanState::Id, BooleanState::Attributes::StateValue::Id);
+                paths[2] = AttributePathParams(kInvalidEndpointId, OccupancySensing::Id, OccupancySensing::Attributes::Occupancy::Id);
+                paths[3] = AttributePathParams(kInvalidEndpointId, PowerSource::Id, PowerSource::Attributes::BatPercentRemaining::Id);
+                paths[4] = AttributePathParams(kInvalidEndpointId, LevelControl::Id, LevelControl::Attributes::CurrentLevel::Id);
+                paths[5] = AttributePathParams(kInvalidEndpointId, TemperatureMeasurement::Id,
+                                               TemperatureMeasurement::Attributes::MeasuredValue::Id);
+                paths[6] = AttributePathParams(kInvalidEndpointId, RelativeHumidityMeasurement::Id,
+                                               RelativeHumidityMeasurement::Attributes::MeasuredValue::Id);
+                paths[7] = AttributePathParams(kInvalidEndpointId, IlluminanceMeasurement::Id,
+                                               IlluminanceMeasurement::Attributes::MeasuredValue::Id);
+                paths[8] = AttributePathParams(0, Descriptor::Id, Descriptor::Attributes::PartsList::Id);
                 ReadPrepareParams params(session);
                 params.mpAttributePathParamsList = paths;
-                params.mAttributePathParamsListSize = 2;
+                params.mAttributePathParamsListSize = kPathCount;
                 params.mMinIntervalFloorSeconds = kSubscribeMinIntervalSeconds;
                 params.mMaxIntervalCeilingSeconds = kSubscribeMaxIntervalSeconds;
                 params.mKeepSubscriptions = true;
@@ -944,6 +1000,26 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
                     err = InvokeCommandRequest(&exchangeMgr, session, endpoint, OnOff::Commands::On::Type{}, onSuccess, onError);
                 else
                     err = InvokeCommandRequest(&exchangeMgr, session, endpoint, OnOff::Commands::Off::Type{}, onSuccess, onError);
+                if (err != CHIP_NO_ERROR)
+                    (*shared)(err);
+            },
+            [shared](CHIP_ERROR err) { (*shared)(err); });
+    }
+
+    void setLevel(std::uint64_t nodeId, std::uint16_t endpoint, std::uint8_t level, std::function<void(CHIP_ERROR)> done)
+    {
+        auto shared = std::make_shared<std::function<void(CHIP_ERROR)>>(std::move(done));
+        withSession(nodeId,
+            [endpoint, level, shared](Messaging::ExchangeManager &exchangeMgr, const SessionHandle &session) {
+                using namespace chip::app::Clusters;
+                auto onSuccess = [shared](const ConcreteCommandPath &, const StatusIB &, const DataModel::NullObjectType &) {
+                    (*shared)(CHIP_NO_ERROR);
+                };
+                auto onError = [shared](CHIP_ERROR err) { (*shared)(err); };
+                LevelControl::Commands::MoveToLevelWithOnOff::Type command;
+                command.level = level;
+                command.transitionTime.SetNonNull(static_cast<std::uint16_t>(0));
+                const CHIP_ERROR err = InvokeCommandRequest(&exchangeMgr, session, endpoint, command, onSuccess, onError);
                 if (err != CHIP_NO_ERROR)
                     (*shared)(err);
             },
@@ -1035,9 +1111,16 @@ void Controller::describe(std::uint64_t nodeId, std::function<void(const NodeInf
     m_impl->post([this, nodeId, done = std::move(done)]() mutable { m_impl->describe(nodeId, std::move(done)); });
 }
 
-void Controller::subscribeOnOff(std::uint64_t nodeId)
+void Controller::subscribe(std::uint64_t nodeId)
 {
-    m_impl->post([this, nodeId] { m_impl->subscribeOnOff(nodeId); });
+    m_impl->post([this, nodeId] { m_impl->subscribe(nodeId); });
+}
+
+void Controller::setLevel(std::uint64_t nodeId, std::uint16_t endpoint, std::uint8_t level, std::function<void(CHIP_ERROR)> done)
+{
+    m_impl->post([this, nodeId, endpoint, level, done = std::move(done)]() mutable {
+        m_impl->setLevel(nodeId, endpoint, level, std::move(done));
+    });
 }
 
 void Controller::setOnOff(std::uint64_t nodeId, std::uint16_t endpoint, bool on, std::function<void(CHIP_ERROR)> done)
