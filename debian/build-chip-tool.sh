@@ -15,7 +15,10 @@ tag=$1
 work=$2
 src=$work/src
 out=$work/out/chip-tool
-jobs=$(nproc)
+# Parallelism. nproc is right on a build host; on a machine that also runs the
+# stack, PHI_CHIP_JOBS caps it - a CHIP translation unit takes the better part
+# of a gigabyte to compile.
+jobs=${PHI_CHIP_JOBS:-$(nproc)}
 
 mkdir -p "$work"
 started=$(date +%s)
@@ -58,10 +61,12 @@ set +u
 source scripts/bootstrap.sh
 set -u
 
-# One target, upstream's own script, release flags. gn_build_example.sh
-# sources activate.sh itself, so the environment above is what it finds.
-scripts/examples/gn_build_example.sh examples/chip-tool "$out" \
-    is_debug=false
+# One target, release flags. This is what upstream's gn_build_example.sh does,
+# spelled out because that script hands ninja no job count and this one has
+# to.
+gn gen --check --fail-on-unused-args --root=examples/chip-tool "$out" \
+    --args="is_debug=false"
+ninja -C "$out" -j "$jobs"
 
 finished=$(date +%s)
 binary=$out/chip-tool

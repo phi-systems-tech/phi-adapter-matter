@@ -52,6 +52,10 @@ of its own - and nothing outside it.
 gigabytes of upstream source would turn every rebuild into a fresh download.
 `PHI_DROP_CHIP_SOURCE=1 debian/rules clean` removes it too.
 
+Parallelism follows `nproc`; `PHI_CHIP_JOBS=<n>` caps it for a machine that
+runs the stack while it builds, since one CHIP translation unit needs the
+better part of a gigabyte to compile.
+
 Disk: reserve 10 GB for the checkout and the build together before the first
 attempt, and more for the dbgsym package `dh_strip` splits off an unstripped
 chip-tool into.
