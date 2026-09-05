@@ -753,11 +753,17 @@ private:
             }
             done.status = v1::CmdStatus::Success;
             done.resultType = v1::ActionResultType::String;
-            std::string text = "Node " + nodeText(nodeId) + " is open for " + std::to_string(kShareWindowSeconds / 60)
-                + " minutes. Pairing code for the other app: " + manual;
+            // A result the UI can show as more than a sentence: the code to
+            // type, and the QR payload to scan, beside the text.
+            Json::Value result(Json::objectValue);
+            result["text"] = "Node " + nodeText(nodeId) + " is open for " + std::to_string(kShareWindowSeconds / 60)
+                + " minutes. Scan the code with the other app, or enter the pairing code there.";
+            result["code"] = manual;
             if (!qr.empty())
-                text += " (QR payload " + qr + ")";
-            done.resultValue = v1::ScalarValue(text);
+                result["qr"] = qr;
+            Json::StreamWriterBuilder builder;
+            builder["indentation"] = "";
+            done.resultValueJson = Json::writeString(builder, result);
             done.formValuesJson = std::string("{\"") + kShareDeviceField + "\":\"\"}";
             submitAction(std::move(done));
         });
