@@ -737,6 +737,8 @@ private:
 
     void shareAction(const phi::AdapterActionInvokeRequest &request, v1::ActionResponse resp)
     {
+        if (answeredWithChoices(request, kShareDeviceField, resp))
+            return;
         std::uint64_t nodeId = 0;
         if (!nodeFromForm(request, kShareDeviceField, resp, &nodeId))
             return;
@@ -771,6 +773,8 @@ private:
 
     void removeAction(const phi::AdapterActionInvokeRequest &request, v1::ActionResponse resp)
     {
+        if (answeredWithChoices(request, kRemoveDeviceField, resp))
+            return;
         std::uint64_t nodeId = 0;
         if (!nodeFromForm(request, kRemoveDeviceField, resp, &nodeId))
             return;
@@ -861,6 +865,41 @@ private:
             m_colors.erase(device);
         }
         m_devicesByNode.erase(it);
+        m_nodeNames.erase(nodeId);
+    }
+
+    // The nodes of this fabric as the choices of a Select field: the UI asks
+    // for them when it opens the dialog (loadFormOnOpen), so nobody has to
+    // know a node id. A node that never answered describe() shows by its id.
+    std::string nodeChoicesJson(const char *field) const
+    {
+        Json::Value choices(Json::arrayValue);
+        std::lock_guard<std::mutex> lock(m_specsMutex);
+        for (const std::uint64_t nodeId : m_controller.nodes()) {
+            Json::Value choice(Json::objectValue);
+            choice["value"] = nodeText(nodeId);
+            const auto name = m_nodeNames.find(nodeId);
+            const std::string label = (name != m_nodeNames.end() && !name->second.empty()) ? name->second : "Node";
+            choice["label"] = label + " (" + nodeText(nodeId) + ")";
+            choices.append(choice);
+        }
+        Json::Value root(Json::objectValue);
+        root[field] = choices;
+        Json::StreamWriterBuilder builder;
+        builder["indentation"] = "";
+        return Json::writeString(builder, root);
+    }
+
+    // Answers a dialog that is only opening: the choices, nothing done.
+    bool answeredWithChoices(const phi::AdapterActionInvokeRequest &request, const char *field, v1::ActionResponse &resp)
+    {
+        const Json::Value params = parseObject(request.paramsJson);
+        if (params.isMember(field) && !trimmed(params[field].asString()).empty())
+            return false;
+        resp.status = v1::CmdStatus::Success;
+        resp.fieldChoicesJson = nodeChoicesJson(field);
+        submitAction(std::move(resp));
+        return true;
     }
 
     // Every device carries the node's reachability, the way the Zigbee
@@ -932,6 +971,12 @@ private:
 
         const std::string nodeName = !info.label.empty() ? info.label : info.product;
         std::size_t published = 0;
+        {
+            // For the pick lists: a label if the owner gave one, else maker
+            // and model, which is how the box on the shelf is known.
+            std::lock_guard<std::mutex> lock(m_specsMutex);
+            m_nodeNames[info.nodeId] = !info.label.empty() ? info.label : trimmed(info.vendor + " " + info.product);
+        }
 
         for (const auto &ep : info.endpoints) {
             char text[256];
@@ -1110,6 +1155,7 @@ private:
     std::unordered_map<std::string, std::vector<ChannelSpec>> m_specs;
     std::unordered_map<std::string, ColorState> m_colors;
     std::map<std::uint64_t, std::set<std::string>> m_devicesByNode;
+    std::map<std::uint64_t, std::string> m_nodeNames;
     std::uint16_t m_listenPort = 0;
     bool m_started = false;
     bool m_allowUntrusted = false;
@@ -1159,7 +1205,7 @@ protected:
         share.label = "Share with another app";
         share.description = "Opens the device for Apple Home, Google Home or the maker's app for five minutes and shows the code to enter there.";
         share.hasForm = true;
-        share.metaJson = R"({"placement":"card","kind":"open_dialog","requiresAck":true})";
+        share.metaJson = R"({"placement":"card","kind":"open_dialog","requiresAck":true,"loadFormOnOpen":true})";
         caps.instanceActions.push_back(share);
 
         v1::AdapterActionDescriptor remove;
@@ -1168,7 +1214,7 @@ protected:
         remove.description = "Takes this fabric off the device and forgets it here.";
         remove.hasForm = true;
         remove.danger = true;
-        remove.metaJson = R"({"placement":"card","kind":"open_dialog","requiresAck":true})";
+        remove.metaJson = R"({"placement":"card","kind":"open_dialog","requiresAck":true,"loadFormOnOpen":true})";
         caps.instanceActions.push_back(remove);
 
         caps.defaultsJson = std::string("{\"name\":") + jsonQuoted(kDisplayName) + ",\"" + kAllowUntrustedField + "\":false,\"" + kListenPortField + "\":5540}";
@@ -1189,8 +1235,8 @@ protected:
                 "layout":{"gridUnits":24,"gutter":[12,8],"defaults":{"span":{"xs":24,"sm":24,"md":12,"lg":12,"xl":12,"xxl":12},"labelPosition":"top","labelSpan":8,"controlSpan":16,"actionPosition":"inline","actionSpan":6}},
                 "fields":[
                     {"key":"pairingCode","type":"String","label":"Pairing code","description":"The code printed on the device or shown by its maker's app (Hue: Settings, Smart home, Matter). Either the 11-digit manual code or the text behind the QR code.","placeholder":"MT:... or 3497-011-2332","flags":["Required","Transient"],"parentActionId":"commission"},
-                    {"key":"shareDevice","type":"String","label":"Device to share","description":"The node id shown in a device's details (0x1), or the id of one of its devices (n1-e3). The other app then adds the device with the code this shows; it stays in this fabric too.","placeholder":"0x1 or n1-e3","flags":["Required","Transient"],"parentActionId":"share"},
-                    {"key":"removeDevice","type":"String","label":"Device to remove","description":"The node id shown in a device's details (0x1), or the id of one of its devices (n1-e3). A bridge goes with everything behind it.","placeholder":"0x1 or n1-e3","flags":["Required","Transient"],"parentActionId":"remove"},
+                    {"key":"shareDevice","type":"Select","label":"Device to share","description":"The other app adds the device with the code this shows; it stays in this fabric too.","flags":["Required","Transient"],"parentActionId":"share"},
+                    {"key":"removeDevice","type":"Select","label":"Device to remove","description":"A bridge goes with everything behind it.","flags":["Required","Transient"],"parentActionId":"remove"},
                     {"key":"allowUntrustedAttestation","type":"Boolean","label":"Allow uncertified devices","description":"Continue commissioning when the device's attestation certificate is not signed by a known Matter PAA. Needed for sample apps and development boards.","default":false},
                     {"key":"listenPort","type":"Int","label":"UDP port","description":"The port this controller answers on. Matter's default is 5540; a second core on the same host needs another one. Takes effect when the instance restarts.","default":5540,"min":1024,"max":65535}
                 ]
