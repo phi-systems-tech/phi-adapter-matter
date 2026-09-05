@@ -206,6 +206,8 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
     };
     std::unique_ptr<Commissioning> commissioning;
     CommissioningParameters commissioningParams;
+    // The SDK keeps a span into this for the length of the commissioning.
+    std::vector<std::uint8_t> commissioningDataset;
 
     // ---- logging ------------------------------------------------------
 
@@ -1382,7 +1384,8 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
 
     // ---- commissioning ------------------------------------------------
 
-    void commission(const std::string &setupCode, std::function<void(std::uint64_t, CHIP_ERROR)> done)
+    void commission(const std::string &setupCode, std::vector<std::uint8_t> threadDataset,
+                    std::function<void(std::uint64_t, CHIP_ERROR)> done)
     {
         if (commissioning) {
             // A new code supersedes an attempt still waiting for its device.
@@ -1397,10 +1400,15 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
 
         commissioningParams = CommissioningParameters();
         commissioningParams.SetDeviceAttestationDelegate(this);
+        commissioningDataset = std::move(threadDataset);
+        if (!commissioningDataset.empty())
+            commissioningParams.SetThreadOperationalDataset(
+                ByteSpan(commissioningDataset.data(), commissioningDataset.size()));
 
-        char text[96];
-        std::snprintf(text, sizeof(text), "commissioning node 0x%016llx over the network",
-                      static_cast<unsigned long long>(commissioning->nodeId));
+        char text[128];
+        std::snprintf(text, sizeof(text), "commissioning node 0x%016llx over the network%s",
+                      static_cast<unsigned long long>(commissioning->nodeId),
+                      commissioningDataset.empty() ? "" : ", with the Thread dataset");
         log(LogLevel::Info, text);
 
         const CHIP_ERROR err = commissioner->PairDevice(commissioning->nodeId, setupCode.c_str(), commissioningParams,
@@ -1449,10 +1457,10 @@ std::vector<std::uint64_t> Controller::nodes() const
     return out;
 }
 
-void Controller::commission(const std::string &setupCode, std::function<void(std::uint64_t, CHIP_ERROR)> done)
+void Controller::commission(const std::string &setupCode, std::vector<std::uint8_t> threadDataset, std::function<void(std::uint64_t, CHIP_ERROR)> done)
 {
-    m_impl->post([this, setupCode, done = std::move(done)]() mutable {
-        m_impl->commission(setupCode, [this, done = std::move(done)](std::uint64_t nodeId, CHIP_ERROR err) {
+    m_impl->post([this, setupCode, threadDataset = std::move(threadDataset), done = std::move(done)]() mutable {
+        m_impl->commission(setupCode, std::move(threadDataset), [this, done = std::move(done)](std::uint64_t nodeId, CHIP_ERROR err) {
             if (err == CHIP_NO_ERROR)
                 m_impl->rememberNode(nodeId, "");
             done(nodeId, err);

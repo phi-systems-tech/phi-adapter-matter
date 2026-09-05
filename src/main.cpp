@@ -27,6 +27,7 @@
 #include "phi/adapter/v1/color.h"
 
 #include "controller.h"
+#include "thread.h"
 
 namespace phi = phicore::adapter::sdk;
 namespace v1 = phicore::adapter::v1;
@@ -45,6 +46,11 @@ constexpr std::uint16_t kShareWindowSeconds = 300;
 constexpr const char kDefaultFabricLabel[] = "phi";
 constexpr const char kRemoveDeviceField[] = "removeDevice";
 constexpr const char kAllowUntrustedField[] = "allowUntrustedAttestation";
+// phi's own Thread border router, read through otbr-agent's console socket.
+constexpr const char kThreadAction[] = "thread";
+constexpr const char kThreadSocketField[] = "threadSocket";
+constexpr const char kJoinThreadField[] = "joinThread";
+constexpr const char kDefaultThreadSocket[] = "/run/openthread-wpan0.sock";
 constexpr const char kListenPortField[] = "listenPort";
 constexpr const char kConnectivityChannel[] = "connectivity";
 constexpr const char kColorChannel[] = "color";
@@ -658,6 +664,10 @@ protected:
             deviceDeleteAction(request, std::move(resp));
             return;
         }
+        if (request.actionId == kThreadAction) {
+            threadAction(std::move(resp));
+            return;
+        }
         if (request.actionId != kCommissionAction) {
             resp.status = v1::CmdStatus::NotSupported;
             resp.error = "Unsupported action";
@@ -666,6 +676,14 @@ protected:
         }
         const Json::Value params = parseObject(request.paramsJson);
         const std::string code = trimmed(params.get(kPairingCodeField, "").asString());
+        // The dataset goes along when phi has a network for the device to
+        // join; a device without a Thread radio ignores it.
+        std::vector<std::uint8_t> dataset;
+        if (params.get(kJoinThreadField, true).asBool()) {
+            const phimatter::ThreadNetwork thread = threadNetwork();
+            if (thread.available && thread.attached())
+                dataset = phimatter::bytesFromHex(thread.datasetHex);
+        }
         if (code.empty()) {
             resp.status = v1::CmdStatus::InvalidArgument;
             resp.error = "Enter the device's pairing code first";
@@ -680,7 +698,7 @@ protected:
         }
 
         const phi::CmdId cmdId = request.cmdId;
-        m_controller.commission(code, [this, cmdId](std::uint64_t nodeId, CHIP_ERROR err) {
+        m_controller.commission(code, std::move(dataset), [this, cmdId](std::uint64_t nodeId, CHIP_ERROR err) {
             v1::ActionResponse done;
             done.id = cmdId;
             done.tsMs = nowMs();
@@ -764,6 +782,26 @@ private:
         m_fabricLabel = name.empty() ? kDefaultFabricLabel : name.substr(0, 32);
         const int port = meta.get(kListenPortField, 0).asInt();
         m_listenPort = (port > 0 && port < 65536) ? static_cast<std::uint16_t>(port) : 0;
+        const std::string socket = trimmed(meta.get(kThreadSocketField, "").asString());
+        m_threadSocket = socket.empty() ? kDefaultThreadSocket : socket;
+    }
+
+    // Asks the border router for its network. Quick when it is not there:
+    // the connect fails at once, and that is the usual state of a box
+    // without the dongle.
+    phimatter::ThreadNetwork threadNetwork()
+    {
+        phimatter::ThreadNetwork net = phimatter::queryThreadNetwork(m_threadSocket);
+        if (net.available != m_threadSeen) {
+            m_threadSeen = net.available;
+            if (net.available)
+                log(phi::LogLevel::Info, phi::LogCategory::Network, "Thread border router at %1: %2",
+                    phi::ScalarList{m_threadSocket, net.summary()}, "matter.thread.found");
+            else
+                log(phi::LogLevel::Info, phi::LogCategory::Network, "No Thread border router at %1 (%2)",
+                    phi::ScalarList{m_threadSocket, net.error}, "matter.thread.absent");
+        }
+        return net;
     }
 
     // Resolves the node a form names, answering the request when it cannot.
@@ -841,6 +879,36 @@ private:
 
     // The device menu's Delete: the node behind the device leaves the fabric.
     // A device behind a bridge has no node of its own to leave.
+    // The border router's network: what it is called and where it stands,
+    // and the dataset as the code - the network key is in it, which is the
+    // point, it is what another controller needs to commission a device
+    // into this network.
+    void threadAction(v1::ActionResponse resp)
+    {
+        const phimatter::ThreadNetwork thread = threadNetwork();
+        if (!thread.available) {
+            resp.status = v1::CmdStatus::TemporarilyOffline;
+            resp.error = "No Thread border router is running here (" + thread.error + "); plug in the Thread radio";
+            submitAction(std::move(resp));
+            return;
+        }
+        publishFabric();
+        Json::Value result(Json::objectValue);
+        std::string text = thread.summary();
+        if (!thread.panId.empty())
+            text += ", PAN " + thread.panId;
+        if (!thread.extPanId.empty())
+            text += ", extended PAN " + thread.extPanId;
+        text += ". The code is the active operational dataset with the network key: paste it into a controller that is to commission devices into this network.";
+        result["text"] = text;
+        result["code"] = thread.datasetHex;
+        resp.status = v1::CmdStatus::Success;
+        Json::StreamWriterBuilder builder;
+        builder["indentation"] = "";
+        resp.resultValueJson = Json::writeString(builder, result);
+        submitAction(std::move(resp));
+    }
+
     void deviceDeleteAction(const phi::AdapterActionInvokeRequest &request, v1::ActionResponse resp)
     {
         const Json::Value params = parseObject(request.paramsJson);
@@ -1054,7 +1122,10 @@ private:
     void publishFabric()
     {
         const std::string id = m_controller.compressedFabricId();
-        const std::string summary = "Fabric " + m_fabricLabel + " (" + id + ")";
+        std::string summary = "Fabric " + m_fabricLabel + " (" + id + ")";
+        const phimatter::ThreadNetwork thread = threadNetwork();
+        if (thread.available)
+            summary += " \u00b7 " + thread.summary();
         Json::Value patch(Json::objectValue);
         // The controller lives on this machine; that is the instance's host.
         patch["host"] = "localhost";
@@ -1369,6 +1440,8 @@ private:
     std::set<std::uint64_t> m_bridgeNodes;
     std::set<std::string> m_fixedNames;
     std::uint16_t m_listenPort = 0;
+    std::string m_threadSocket = kDefaultThreadSocket;
+    bool m_threadSeen = false;
     std::string m_fabricLabel = kDefaultFabricLabel;
     bool m_nodesLabeled = false;
     bool m_started = false;
@@ -1422,6 +1495,13 @@ protected:
         share.metaJson = R"({"placement":"card","kind":"open_dialog","requiresAck":true,"loadFormOnOpen":true})";
         caps.instanceActions.push_back(share);
 
+        v1::AdapterActionDescriptor thread;
+        thread.id = kThreadAction;
+        thread.label = "Thread network";
+        thread.description = "The network phi's own border router runs, and its dataset for other controllers.";
+        thread.metaJson = R"({"placement":"card","kind":"command","requiresAck":true})";
+        caps.instanceActions.push_back(thread);
+
         // The device menu's Delete, by the name the UI looks for. Placed on
         // the device, never in the card.
         v1::AdapterActionDescriptor deviceDelete;
@@ -1460,10 +1540,12 @@ protected:
                 "layout":{"gridUnits":24,"gutter":[12,8],"defaults":{"span":{"xs":24,"sm":24,"md":12,"lg":12,"xl":12,"xxl":12},"labelPosition":"top","labelSpan":8,"controlSpan":16,"actionPosition":"inline","actionSpan":6}},
                 "fields":[
                     {"key":"pairingCode","type":"String","label":"Pairing code","description":"The code printed on the device or shown by its maker's app (Hue: Settings, Smart home, Matter). Either the 11-digit manual code or the text behind the QR code.","placeholder":"MT:... or 3497-011-2332","flags":["Required","Transient"],"parentActionId":"commission"},
+                    {"key":"joinThread","type":"Boolean","label":"Join phi's Thread network","description":"A device with a Thread radio joins the network phi's own border router runs. Off, it is left on whatever network its maker's app put it on.","default":true,"flags":["Transient"],"parentActionId":"commission"},
                     {"key":"shareDevice","type":"Select","label":"Device to share","description":"The other app adds the device with the code this shows; it stays in this fabric too.","flags":["Required","Transient"],"parentActionId":"share"},
                     {"key":"removeDevice","type":"Select","label":"Device to remove","description":"A bridge goes with everything behind it.","flags":["Required","Transient"],"parentActionId":"remove"},
                     {"key":"allowUntrustedAttestation","type":"Boolean","label":"Allow uncertified devices","description":"Continue commissioning when the device's attestation certificate is not signed by a known Matter PAA. Needed for sample apps and development boards.","default":false},
-                    {"key":"listenPort","type":"Int","label":"UDP port","description":"The port this controller answers on. Matter's default is 5540; a second core on the same host needs another one. Takes effect when the instance restarts.","default":5540,"min":1024,"max":65535}
+                    {"key":"listenPort","type":"Int","label":"UDP port","description":"The port this controller answers on. Matter's default is 5540; a second core on the same host needs another one. Takes effect when the instance restarts.","default":5540,"min":1024,"max":65535},
+                    {"key":"threadSocket","type":"String","label":"Border router console","description":"otbr-agent's console socket, where phi's own Thread network is read from. Leave it unless the Thread interface is not wpan0.","default":"/run/openthread-wpan0.sock","placeholder":"/run/openthread-wpan0.sock"}
                 ]
             }
         })";

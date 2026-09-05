@@ -114,8 +114,11 @@ public:
     void setFabricLabel(std::uint64_t nodeId, const std::string &label, std::function<void(CHIP_ERROR)> done);
 
     // Commissions the device behind a setup code (an "MT:..." QR payload or a
-    // manual pairing code) over the network. One at a time.
-    void commission(const std::string &setupCode,
+    // manual pairing code) over the network. One at a time. A Thread
+    // operational dataset (TLV bytes), when given, is handed to a device
+    // that has a Thread radio to configure; devices on Wi-Fi or Ethernet
+    // never see it.
+    void commission(const std::string &setupCode, std::vector<std::uint8_t> threadDataset,
                     std::function<void(std::uint64_t nodeId, CHIP_ERROR)> done);
 
     // Reads the node's structure: endpoints, device types, server clusters,

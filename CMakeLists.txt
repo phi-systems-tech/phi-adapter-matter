@@ -40,6 +40,7 @@ endif()
 add_executable(phi_adapter_matter_ipc
     src/controller.cpp
     src/main.cpp
+    src/thread.cpp
 )
 
 target_include_directories(phi_adapter_matter_ipc

@@ -1,3 +1,13 @@
+phi-adapter-matter (0.0.5-1) trixie; urgency=medium
+
+  * phi's own Thread network: the adapter reads otbr-agent's console
+    (phi-otbr-runtime) for the network and its active dataset, shows it as
+    the card's "Thread network" action with the dataset as the code, adds
+    it to the fabric line, and hands the dataset to a device commissioned
+    with "Join phi's Thread network" on, which is the default.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sat, 05 Sep 2026 22:15:00 +0200
+
 phi-adapter-matter (0.0.4-1) trixie; urgency=medium
 
   * Built with CMake against phi-chip-dev, the SDK prebuilt: no GN, Pigweed
