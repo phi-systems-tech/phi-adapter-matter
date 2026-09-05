@@ -9,12 +9,14 @@
 #include <chrono>
 #include <cmath>
 #include <optional>
+#include <set>
 #include <unordered_map>
 #include <csignal>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <iostream>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -22,6 +24,7 @@
 #include <json/json.h>
 
 #include "phi/adapter/sdk/sidecar.h"
+#include "phi/adapter/v1/color.h"
 
 #include "controller.h"
 
@@ -34,7 +37,13 @@ constexpr const char kPluginType[] = "matter";
 constexpr const char kDisplayName[] = "Matter";
 constexpr const char kCommissionAction[] = "commission";
 constexpr const char kPairingCodeField[] = "pairingCode";
+constexpr const char kRemoveAction[] = "remove";
+constexpr const char kRemoveDeviceField[] = "removeDevice";
 constexpr const char kAllowUntrustedField[] = "allowUntrustedAttestation";
+constexpr const char kListenPortField[] = "listenPort";
+constexpr const char kConnectivityChannel[] = "connectivity";
+constexpr const char kColorChannel[] = "color";
+constexpr const char kColorTemperatureChannel[] = "colortemp";
 constexpr const char kDefaultPaaDir[] = "/usr/share/phi/matter/paa-root-certs";
 constexpr int kStopBudgetMs = 1500;
 
@@ -162,6 +171,7 @@ constexpr std::uint32_t IlluminanceMeasurement = 0x0400;
 constexpr std::uint32_t TemperatureMeasurement = 0x0402;
 constexpr std::uint32_t RelativeHumidityMeasurement = 0x0405;
 constexpr std::uint32_t OccupancySensing = 0x0406;
+constexpr std::uint32_t ColorControl = 0x0300;
 } // namespace cluster
 namespace attribute {
 constexpr std::uint32_t OnOff = 0x0000;
@@ -170,7 +180,22 @@ constexpr std::uint32_t BatPercentRemaining = 0x000C;
 constexpr std::uint32_t StateValue = 0x0000;
 constexpr std::uint32_t MeasuredValue = 0x0000;
 constexpr std::uint32_t Occupancy = 0x0000;
+constexpr std::uint32_t CurrentHue = 0x0000;
+constexpr std::uint32_t CurrentSaturation = 0x0001;
+constexpr std::uint32_t CurrentX = 0x0003;
+constexpr std::uint32_t CurrentY = 0x0004;
+constexpr std::uint32_t ColorTemperatureMireds = 0x0007;
+constexpr std::uint32_t ColorMode = 0x0008;
 } // namespace attribute
+
+// Color Control capabilities and modes.
+constexpr std::uint16_t kColorCapHueSaturation = 0x0001;
+constexpr std::uint16_t kColorCapXy = 0x0008;
+constexpr std::uint16_t kColorCapTemperature = 0x0010;
+constexpr double kColorModeXy = 1.0;
+constexpr double kColorModeTemperature = 2.0;
+constexpr std::uint16_t kDefaultMinMireds = 153;
+constexpr std::uint16_t kDefaultMaxMireds = 500;
 
 constexpr std::uint32_t kAggregatorType = 0x000E;
 constexpr std::uint32_t kOccupancySensorType = 0x0107;
@@ -214,6 +239,30 @@ std::vector<ChannelSpec> channelsFor(const phimatter::EndpointInfo &ep)
     if (hasCluster(ep, cluster::LevelControl))
         out.push_back({"brightness", cluster::LevelControl, attribute::CurrentLevel, ChannelKind::Brightness,
                        ChannelDataType::Float, v1::kChannelFlagDefaultWrite, "%", 0, 100, 1});
+    if (hasCluster(ep, cluster::ColorControl)) {
+        // The capabilities bitmap says what the light can do; a device that
+        // did not answer it is judged by its device type.
+        std::uint16_t caps = ep.colorCapabilities;
+        if (caps == 0) {
+            if (hasDeviceType(ep, ExtendedColorLight))
+                caps = kColorCapHueSaturation | kColorCapTemperature;
+            else if (hasDeviceType(ep, ColorTemperatureLight))
+                caps = kColorCapTemperature;
+        }
+        if (caps & kColorCapTemperature) {
+            const double minMireds = ep.colorTempMinMireds > 0 ? ep.colorTempMinMireds : kDefaultMinMireds;
+            const double maxMireds = ep.colorTempMaxMireds > 0 ? ep.colorTempMaxMireds : kDefaultMaxMireds;
+            out.push_back({kColorTemperatureChannel, cluster::ColorControl, attribute::ColorTemperatureMireds,
+                           ChannelKind::ColorTemperature, ChannelDataType::Int, v1::kChannelFlagDefaultWrite, "mired",
+                           minMireds, maxMireds, 1});
+        }
+        if (caps & (kColorCapHueSaturation | kColorCapXy)) {
+            // Fed from hue and saturation (or x and y); the attribute here
+            // is only the one that names the channel.
+            out.push_back({kColorChannel, cluster::ColorControl, attribute::CurrentHue, ChannelKind::ColorRGB,
+                           ChannelDataType::Color, v1::kChannelFlagDefaultWrite, "", 0, 0, 0});
+        }
+    }
     if (hasCluster(ep, cluster::OccupancySensing))
         out.push_back({"motion", cluster::OccupancySensing, attribute::Occupancy, ChannelKind::Motion, ChannelDataType::Bool,
                        v1::kChannelFlagDefaultRead, "", 0, 0, 0});
@@ -258,6 +307,8 @@ v1::ScalarValue channelValue(const ChannelSpec &spec, const phimatter::Attribute
     case v1::ChannelKind::Battery:
         // Half-percent units.
         return v1::ScalarValue(static_cast<std::int64_t>(std::lround(value.number / 2.0)));
+    case v1::ChannelKind::ColorTemperature:
+        return v1::ScalarValue(static_cast<std::int64_t>(std::lround(value.number)));
     case v1::ChannelKind::Temperature:
     case v1::ChannelKind::Humidity:
         return v1::ScalarValue(value.number / 100.0);
@@ -293,6 +344,102 @@ bool parseDeviceExternalId(const std::string &id, std::uint64_t *nodeId, std::ui
     return true;
 }
 
+// A node as a person names it: "0x1", "1", or a device id "n1-e3".
+bool parseNodeReference(std::string text, std::uint64_t *nodeId)
+{
+    text = trimmed(std::move(text));
+    if (text.empty())
+        return false;
+    std::uint16_t endpoint = 0;
+    if (parseDeviceExternalId(text, nodeId, &endpoint))
+        return true;
+    char *end = nullptr;
+    const unsigned long long value = std::strtoull(text.c_str(), &end, 0);
+    if (end == text.c_str() || *end != '\0' || value == 0)
+        return false;
+    *nodeId = value;
+    return true;
+}
+
+std::string nodeText(std::uint64_t nodeId)
+{
+    char text[32];
+    std::snprintf(text, sizeof(text), "0x%llx", static_cast<unsigned long long>(nodeId));
+    return text;
+}
+
+// "#rrggbb" or "rrggbb".
+bool parseHexColor(std::string text, double *r, double *g, double *b)
+{
+    text = trimmed(std::move(text));
+    if (!text.empty() && text[0] == '#')
+        text.erase(0, 1);
+    if (text.size() != 6)
+        return false;
+    unsigned value = 0;
+    char *end = nullptr;
+    value = static_cast<unsigned>(std::strtoul(text.c_str(), &end, 16));
+    if (end == text.c_str() || *end != '\0')
+        return false;
+    *r = ((value >> 16) & 0xFF) / 255.0;
+    *g = ((value >> 8) & 0xFF) / 255.0;
+    *b = (value & 0xFF) / 255.0;
+    return true;
+}
+
+// The color a channel write carries: a hex string, {"hex":...} or {"r","g","b"}
+// in 0..1 or 0..255, the same shapes the other adapters accept.
+bool colorFromRequest(const phi::ChannelInvokeRequest &request, double *r, double *g, double *b)
+{
+    if (request.hasScalarValue) {
+        if (const auto *text = std::get_if<std::string>(&request.value))
+            return parseHexColor(*text, r, g, b);
+    }
+    if (request.valueJson.empty())
+        return false;
+    const Json::Value obj = parseObject(request.valueJson);
+    if (obj.isMember("hex"))
+        return parseHexColor(obj["hex"].asString(), r, g, b);
+    if (!obj.isMember("r") || !obj.isMember("g") || !obj.isMember("b"))
+        return false;
+    double red = obj["r"].asDouble();
+    double green = obj["g"].asDouble();
+    double blue = obj["b"].asDouble();
+    if (red > 1.0 || green > 1.0 || blue > 1.0) {
+        red /= 255.0;
+        green /= 255.0;
+        blue /= 255.0;
+    }
+    *r = v1::clamp01(red);
+    *g = v1::clamp01(green);
+    *b = v1::clamp01(blue);
+    return true;
+}
+
+// What a color light last reported, enough to turn it into sRGB.
+struct ColorState {
+    double hue = 0;        // 0..254
+    double saturation = 0; // 0..254
+    double x = 0;          // 0..65535
+    double y = 0;
+    double mode = 0;
+    bool haveHue = false;
+    bool haveSaturation = false;
+    bool haveX = false;
+    bool haveY = false;
+
+    std::optional<v1::Color> color() const
+    {
+        if (mode == kColorModeTemperature)
+            return std::nullopt;
+        if (mode == kColorModeXy && haveX && haveY)
+            return v1::colorFromXy(x / 65535.0, y / 65535.0, 1.0);
+        if (haveHue && haveSaturation)
+            return v1::hsvToColor(hue / 254.0 * 360.0, saturation / 254.0, 1.0);
+        return std::nullopt;
+    }
+};
+
 class MatterInstance final : public phi::AdapterInstance
 {
 public:
@@ -309,6 +456,7 @@ protected:
         if (const char *env = std::getenv("PHI_MATTER_PAA_TRUST_STORE"); env && *env)
             options.paaTrustStoreDir = env;
         options.allowUntrustedAttestation = m_allowUntrusted;
+        options.listenPort = m_listenPort;
 
         phimatter::Callbacks callbacks;
         callbacks.log = [this](phimatter::LogLevel level, const std::string &message) {
@@ -317,6 +465,10 @@ protected:
         callbacks.attribute = [this](std::uint64_t nodeId, std::uint16_t endpoint, std::uint32_t clusterId,
                                      std::uint32_t attributeId, const phimatter::AttributeValue &value) {
             const std::string device = deviceExternalId(nodeId, endpoint);
+            if (clusterId == cluster::ColorControl && attributeId != attribute::ColorTemperatureMireds) {
+                onColorAttribute(device, attributeId, value);
+                return;
+            }
             const std::optional<ChannelSpec> spec = findSpec(device, clusterId, attributeId);
             if (!spec)
                 return;
@@ -338,6 +490,9 @@ protected:
                           reachable ? "reachable" : "unreachable");
             log(reachable ? phi::LogLevel::Info : phi::LogLevel::Warn, phi::LogCategory::Network, text, {},
                 "matter.node.reachable");
+            const auto status = reachable ? v1::ConnectivityStatus::Connected : v1::ConnectivityStatus::Disconnected;
+            for (const std::string &device : devicesOf(nodeId))
+                sendChannelStateUpdated(device, kConnectivityChannel, v1::ScalarValue(static_cast<std::int64_t>(status)), nowMs());
         };
 
         std::string error;
@@ -422,6 +577,47 @@ protected:
             });
             return;
         }
+        if (channel == kColorTemperatureChannel) {
+            double mireds = 0.0;
+            if (request.hasScalarValue && std::holds_alternative<double>(request.value))
+                mireds = std::get<double>(request.value);
+            else if (request.hasScalarValue && std::holds_alternative<std::int64_t>(request.value))
+                mireds = static_cast<double>(std::get<std::int64_t>(request.value));
+            else {
+                submit(makeResponse(cmdId, v1::CmdStatus::InvalidArgument, "Color temperature wants mireds"));
+                return;
+            }
+            const std::optional<ChannelSpec> spec = findSpec(device, cluster::ColorControl, attribute::ColorTemperatureMireds);
+            const double lo = spec ? spec->minValue : kDefaultMinMireds;
+            const double hi = spec ? spec->maxValue : kDefaultMaxMireds;
+            mireds = std::min(hi, std::max(lo, mireds));
+            const auto value = static_cast<std::uint16_t>(std::lround(mireds));
+            m_controller.setColorTemperature(nodeId, endpoint, value, [finish, value](CHIP_ERROR err) {
+                finish(err, v1::ScalarValue(static_cast<std::int64_t>(value)));
+            });
+            return;
+        }
+        if (channel == kColorChannel) {
+            double r = 0, g = 0, b = 0;
+            if (!colorFromRequest(request, &r, &g, &b)) {
+                submit(makeResponse(cmdId, v1::CmdStatus::InvalidArgument, "Color wants #rrggbb or {r,g,b}"));
+                return;
+            }
+            const v1::Hsv hsv = v1::colorToHsv(v1::makeColor(r, g, b));
+            const auto hue = static_cast<std::uint8_t>(std::lround(hsv.hDeg / 360.0 * 254.0));
+            const auto saturation = static_cast<std::uint8_t>(std::lround(hsv.s * 254.0));
+            // Brightness is its own channel; the color keeps full value.
+            const v1::Color shown = v1::hsvToColor(hsv.hDeg, hsv.s, 1.0);
+            m_controller.setHueSaturation(nodeId, endpoint, hue, saturation, [this, cmdId, device, channel, shown](CHIP_ERROR err) {
+                if (err != CHIP_NO_ERROR) {
+                    submit(makeResponse(cmdId, v1::CmdStatus::Failure, phimatter::errorText(err)));
+                    return;
+                }
+                submit(makeResponse(cmdId, v1::CmdStatus::Success, {}));
+                sendChannelColorStateUpdated(device, channel, shown.r, shown.g, shown.b, nowMs());
+            });
+            return;
+        }
         submit(makeResponse(cmdId, v1::CmdStatus::NotSupported, "Channel is read-only"));
     }
 
@@ -431,6 +627,10 @@ protected:
         resp.id = request.cmdId;
         resp.tsMs = nowMs();
 
+        if (request.actionId == kRemoveAction) {
+            removeAction(request, std::move(resp));
+            return;
+        }
         if (request.actionId != kCommissionAction) {
             resp.status = v1::CmdStatus::NotSupported;
             resp.error = "Unsupported action";
@@ -497,6 +697,133 @@ private:
             return;
         const Json::Value meta = parseObject(config().adapter.metaJson);
         m_allowUntrusted = meta.get(kAllowUntrustedField, false).asBool();
+        const int port = meta.get(kListenPortField, 0).asInt();
+        m_listenPort = (port > 0 && port < 65536) ? static_cast<std::uint16_t>(port) : 0;
+    }
+
+    void removeAction(const phi::AdapterActionInvokeRequest &request, v1::ActionResponse resp)
+    {
+        const Json::Value params = parseObject(request.paramsJson);
+        std::uint64_t nodeId = 0;
+        if (!parseNodeReference(params.get(kRemoveDeviceField, "").asString(), &nodeId)) {
+            resp.status = v1::CmdStatus::InvalidArgument;
+            resp.error = "Name the node to remove: its id (0x1) or one of its devices (n1-e3)";
+            submitAction(std::move(resp));
+            return;
+        }
+        if (!m_started) {
+            resp.status = v1::CmdStatus::TemporarilyOffline;
+            resp.error = "Matter stack is not running";
+            submitAction(std::move(resp));
+            return;
+        }
+        const auto known = m_controller.nodes();
+        if (std::find(known.begin(), known.end(), nodeId) == known.end()) {
+            resp.status = v1::CmdStatus::InvalidArgument;
+            resp.error = "Node " + nodeText(nodeId) + " is not in this fabric";
+            submitAction(std::move(resp));
+            return;
+        }
+        const phi::CmdId cmdId = request.cmdId;
+        m_controller.remove(nodeId, [this, cmdId, nodeId](CHIP_ERROR err) {
+            for (const std::string &device : devicesOf(nodeId)) {
+                std::string error;
+                if (!sendDeviceRemoved(device, &error)) {
+                    log(phi::LogLevel::Error, phi::LogCategory::Internal, "Failed to remove %1: %2",
+                        phi::ScalarList{device, error}, "matter.device.remove.failed");
+                }
+            }
+            dropNode(nodeId);
+
+            v1::ActionResponse done;
+            done.id = cmdId;
+            done.tsMs = nowMs();
+            done.status = v1::CmdStatus::Success;
+            done.resultType = v1::ActionResultType::String;
+            if (err == CHIP_NO_ERROR) {
+                done.resultValue = v1::ScalarValue("Removed node " + nodeText(nodeId));
+            } else {
+                // Forgotten here regardless; the device keeps a fabric it
+                // cannot use until somebody resets it.
+                done.resultValue = v1::ScalarValue("Node " + nodeText(nodeId) + " forgotten; the device did not let go of the fabric ("
+                                                   + phimatter::errorText(err) + "), a factory reset clears it");
+            }
+            done.formValuesJson = std::string("{\"") + kRemoveDeviceField + "\":\"\"}";
+            submitAction(std::move(done));
+        });
+    }
+
+    // Color Control reports arrive one attribute at a time; the channel wants
+    // all of them, so they are kept per device and the color is sent whenever
+    // one of them moves.
+    void onColorAttribute(const std::string &device, std::uint32_t attributeId, const phimatter::AttributeValue &value)
+    {
+        if (value.isNull)
+            return;
+        std::optional<v1::Color> color;
+        {
+            std::lock_guard<std::mutex> lock(m_specsMutex);
+            const auto specs = m_specs.find(device);
+            if (specs == m_specs.end())
+                return;
+            const bool hasColor = std::any_of(specs->second.begin(), specs->second.end(),
+                                              [](const ChannelSpec &spec) { return spec.kind == v1::ChannelKind::ColorRGB; });
+            if (!hasColor)
+                return;
+            ColorState &state = m_colors[device];
+            switch (attributeId) {
+            case attribute::CurrentHue: state.hue = value.number; state.haveHue = true; break;
+            case attribute::CurrentSaturation: state.saturation = value.number; state.haveSaturation = true; break;
+            case attribute::CurrentX: state.x = value.number; state.haveX = true; break;
+            case attribute::CurrentY: state.y = value.number; state.haveY = true; break;
+            case attribute::ColorMode: state.mode = value.number; break;
+            default: return;
+            }
+            color = state.color();
+        }
+        if (color)
+            sendChannelColorStateUpdated(device, kColorChannel, color->r, color->g, color->b, nowMs());
+    }
+
+    std::vector<std::string> devicesOf(std::uint64_t nodeId) const
+    {
+        std::lock_guard<std::mutex> lock(m_specsMutex);
+        const auto it = m_devicesByNode.find(nodeId);
+        if (it == m_devicesByNode.end())
+            return {};
+        return std::vector<std::string>(it->second.begin(), it->second.end());
+    }
+
+    void rememberDevice(std::uint64_t nodeId, const std::string &device)
+    {
+        std::lock_guard<std::mutex> lock(m_specsMutex);
+        m_devicesByNode[nodeId].insert(device);
+    }
+
+    void dropNode(std::uint64_t nodeId)
+    {
+        std::lock_guard<std::mutex> lock(m_specsMutex);
+        const auto it = m_devicesByNode.find(nodeId);
+        if (it == m_devicesByNode.end())
+            return;
+        for (const std::string &device : it->second) {
+            m_specs.erase(device);
+            m_colors.erase(device);
+        }
+        m_devicesByNode.erase(it);
+    }
+
+    // Every device carries the node's reachability, the way the Zigbee
+    // adapter does it: the UI reads this channel for its offline mark.
+    static v1::Channel connectivityChannel()
+    {
+        v1::Channel channel;
+        channel.externalId = kConnectivityChannel;
+        channel.name = "Connectivity";
+        channel.kind = v1::ChannelKind::ConnectivityStatus;
+        channel.dataType = v1::ChannelDataType::Enum;
+        channel.flags = v1::ChannelFlag::Readable | v1::ChannelFlag::Reportable | v1::ChannelFlag::Retained;
+        return channel;
     }
 
     // Reads a node's structure and publishes every OnOff-serving endpoint as
@@ -582,8 +909,9 @@ private:
             char nodeText[32];
             std::snprintf(nodeText, sizeof(nodeText), "0x%llx", static_cast<unsigned long long>(info.nodeId));
             gateway.metaJson = std::string("{\"kind\":\"matter\",\"nodeId\":\"") + nodeText + "\",\"endpoint\":0}";
+            rememberDevice(info.nodeId, gateway.externalId);
             std::string error;
-            if (!sendDeviceUpdated(gateway, {}, &error)) {
+            if (!sendDeviceUpdated(gateway, {connectivityChannel()}, &error)) {
                 log(phi::LogLevel::Error, phi::LogCategory::Internal, "Failed to publish %1: %2",
                     phi::ScalarList{gateway.externalId, error}, "matter.device.publish.failed");
             } else {
@@ -643,9 +971,11 @@ private:
                 if (spec.kind == v1::ChannelKind::Battery)
                     device.flags = device.flags | v1::DeviceFlag::Battery;
             }
+            channels.push_back(connectivityChannel());
             {
                 std::lock_guard<std::mutex> lock(m_specsMutex);
                 m_specs[device.externalId] = specs;
+                m_devicesByNode[info.nodeId].insert(device.externalId);
             }
 
             std::string error;
@@ -675,6 +1005,8 @@ private:
         case v1::ChannelKind::Humidity: return "Humidity";
         case v1::ChannelKind::Illuminance: return "Illuminance";
         case v1::ChannelKind::Battery: return "Battery";
+        case v1::ChannelKind::ColorTemperature: return "Color temperature";
+        case v1::ChannelKind::ColorRGB: return "Color";
         default: return spec.id;
         }
     }
@@ -726,6 +1058,9 @@ private:
     // callback; both under the lock.
     mutable std::mutex m_specsMutex;
     std::unordered_map<std::string, std::vector<ChannelSpec>> m_specs;
+    std::unordered_map<std::string, ColorState> m_colors;
+    std::map<std::uint64_t, std::set<std::string>> m_devicesByNode;
+    std::uint16_t m_listenPort = 0;
     bool m_started = false;
     bool m_allowUntrusted = false;
 };
@@ -769,7 +1104,16 @@ protected:
         commission.metaJson = R"({"placement":"card","kind":"open_dialog","requiresAck":true})";
         caps.instanceActions.push_back(commission);
 
-        caps.defaultsJson = std::string("{\"name\":") + jsonQuoted(kDisplayName) + ",\"" + kAllowUntrustedField + "\":false}";
+        v1::AdapterActionDescriptor remove;
+        remove.id = kRemoveAction;
+        remove.label = "Remove device";
+        remove.description = "Takes this fabric off the device and forgets it here.";
+        remove.hasForm = true;
+        remove.danger = true;
+        remove.metaJson = R"({"placement":"card","kind":"open_dialog","requiresAck":true})";
+        caps.instanceActions.push_back(remove);
+
+        caps.defaultsJson = std::string("{\"name\":") + jsonQuoted(kDisplayName) + ",\"" + kAllowUntrustedField + "\":false,\"" + kListenPortField + "\":5540}";
         return caps;
     }
 
@@ -787,7 +1131,9 @@ protected:
                 "layout":{"gridUnits":24,"gutter":[12,8],"defaults":{"span":{"xs":24,"sm":24,"md":12,"lg":12,"xl":12,"xxl":12},"labelPosition":"top","labelSpan":8,"controlSpan":16,"actionPosition":"inline","actionSpan":6}},
                 "fields":[
                     {"key":"pairingCode","type":"String","label":"Pairing code","description":"The code printed on the device or shown by its maker's app (Hue: Settings, Smart home, Matter). Either the 11-digit manual code or the text behind the QR code.","placeholder":"MT:... or 3497-011-2332","flags":["Required","Transient"],"parentActionId":"commission"},
-                    {"key":"allowUntrustedAttestation","type":"Boolean","label":"Allow uncertified devices","description":"Continue commissioning when the device's attestation certificate is not signed by a known Matter PAA. Needed for sample apps and development boards.","default":false}
+                    {"key":"removeDevice","type":"String","label":"Device to remove","description":"The node id shown in a device's details (0x1), or the id of one of its devices (n1-e3). A bridge goes with everything behind it.","placeholder":"0x1 or n1-e3","flags":["Required","Transient"],"parentActionId":"remove"},
+                    {"key":"allowUntrustedAttestation","type":"Boolean","label":"Allow uncertified devices","description":"Continue commissioning when the device's attestation certificate is not signed by a known Matter PAA. Needed for sample apps and development boards.","default":false},
+                    {"key":"listenPort","type":"Int","label":"UDP port","description":"The port this controller answers on. Matter's default is 5540; a second core on the same host needs another one. Takes effect when the instance restarts.","default":5540,"min":1024,"max":65535}
                 ]
             }
         })";

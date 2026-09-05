@@ -1,5 +1,7 @@
 #include "controller.h"
 
+#include <controller/CurrentFabricRemover.h>
+
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -322,6 +324,22 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
         return nextNodeId++;
     }
 
+    void forgetNode(std::uint64_t nodeId)
+    {
+        std::lock_guard<std::mutex> lock(registryMutex);
+        if (registry.erase(nodeId) == 0)
+            return;
+        std::string error;
+        if (!saveRegistryLocked(&error))
+            log(LogLevel::Error, "registry not saved: " + error);
+    }
+
+    bool registryEmpty() const
+    {
+        std::lock_guard<std::mutex> lock(registryMutex);
+        return registry.empty();
+    }
+
     void rememberNode(std::uint64_t nodeId, const std::string &name)
     {
         std::lock_guard<std::mutex> lock(registryMutex);
@@ -371,6 +389,7 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
         factoryParams.operationalKeystore = &operationalKeystore;
         factoryParams.opCertStore = &opCertStore;
         factoryParams.enableServerInteractions = false;
+        factoryParams.listenPort = options.listenPort;
         factoryParams.sessionKeystore = &sessionKeystore;
         factoryParams.dataModelProvider = CodegenDataModelProviderInstance(&storage);
 
@@ -412,7 +431,7 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
         if (err != CHIP_NO_ERROR)
             return fail("credentials issuer init", err);
 
-        const NodeId localNodeId = storage.GetLocalNodeId();
+        const NodeId localNodeId = controllerNodeId();
         Crypto::P256Keypair ephemeralKey;
         err = ephemeralKey.Initialize(Crypto::ECPKeyTarget::ECDSA);
         if (err != CHIP_NO_ERROR)
@@ -466,14 +485,39 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
 
         {
             char text[128];
-            std::snprintf(text, sizeof(text), "fabric %u up: compressed id %s, %zu PAA roots, %zu known nodes",
+            std::snprintf(text, sizeof(text),
+                          "fabric %u up: compressed id %s, controller node 0x%016llx, %zu PAA roots, %zu known nodes",
                           static_cast<unsigned>(fabricIndex),
                           toHex(compressedFabricId, sizeof(compressedFabricId)).c_str(),
+                          static_cast<unsigned long long>(localNodeId),
                           fileTrustStore ? fileTrustStore->paaCount() : std::size_t(0),
                           registry.size());
             log(LogLevel::Info, text);
         }
         return true;
+    }
+
+    // The controller's own operational node id. The example storage answers
+    // the SDK's test id when none is stored, and every commissioned device
+    // carries that id in its ACL; so a fabric that already has devices keeps
+    // whatever it was built with, and only a fresh one draws a random id.
+    NodeId controllerNodeId()
+    {
+        std::uint64_t stored = 0;
+        std::uint16_t size = sizeof(stored);
+        const CHIP_ERROR err = storage.SyncGetKeyValue("LocalNodeId", &stored, size);
+        if (err == CHIP_NO_ERROR)
+            return storage.GetLocalNodeId();
+        NodeId nodeId = storage.GetLocalNodeId();
+        if (registryEmpty()) {
+            std::uint64_t random = 0;
+            if (Crypto::DRBG_get_bytes(reinterpret_cast<std::uint8_t *>(&random), sizeof(random)) == CHIP_NO_ERROR)
+                nodeId = static_cast<NodeId>(random % kMaxOperationalNodeId) + 1;
+        }
+        // Pinned either way, so the answer never changes underneath the ACLs.
+        if (storage.SetLocalNodeId(nodeId) != CHIP_NO_ERROR)
+            log(LogLevel::Warn, "controller node id not persisted; using the SDK default");
+        return nodeId;
     }
 
     void tearDown(int budgetMs)
@@ -653,7 +697,7 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
         std::function<void(const NodeInfo &, CHIP_ERROR)> done;
         std::map<std::uint16_t, EndpointInfo> endpoints;
         std::unique_ptr<ReadClient> client;
-        AttributePathParams paths[9];
+        AttributePathParams paths[12];
         CHIP_ERROR result = CHIP_NO_ERROR;
 
         EndpointInfo &endpoint(EndpointId id)
@@ -717,6 +761,23 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
                         info.label = spanToString(text);
                     else if (path.mAttributeId == BasicInformation::Attributes::SoftwareVersionString::Id)
                         info.software = spanToString(text);
+                }
+            } else if (path.mClusterId == ColorControl::Id) {
+                EndpointInfo &ep = endpoint(path.mEndpointId);
+                if (path.mAttributeId == ColorControl::Attributes::ColorCapabilities::Id) {
+                    ColorControl::Attributes::ColorCapabilities::TypeInfo::DecodableType caps;
+                    err = DataModel::Decode(*data, caps);
+                    if (err == CHIP_NO_ERROR)
+                        ep.colorCapabilities = caps.Raw();
+                } else {
+                    std::uint16_t mireds = 0;
+                    err = DataModel::Decode(*data, mireds);
+                    if (err == CHIP_NO_ERROR) {
+                        if (path.mAttributeId == ColorControl::Attributes::ColorTempPhysicalMinMireds::Id)
+                            ep.colorTempMinMireds = mireds;
+                        else if (path.mAttributeId == ColorControl::Attributes::ColorTempPhysicalMaxMireds::Id)
+                            ep.colorTempMaxMireds = mireds;
+                    }
                 }
             } else if (path.mClusterId == BridgedDeviceBasicInformation::Id) {
                 CharSpan text;
@@ -782,6 +843,12 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
                                                      BridgedDeviceBasicInformation::Attributes::VendorName::Id);
                 read->paths[8] = AttributePathParams(kInvalidEndpointId, BridgedDeviceBasicInformation::Id,
                                                      BridgedDeviceBasicInformation::Attributes::ProductName::Id);
+                read->paths[9] = AttributePathParams(kInvalidEndpointId, ColorControl::Id,
+                                                     ColorControl::Attributes::ColorCapabilities::Id);
+                read->paths[10] = AttributePathParams(kInvalidEndpointId, ColorControl::Id,
+                                                      ColorControl::Attributes::ColorTempPhysicalMinMireds::Id);
+                read->paths[11] = AttributePathParams(kInvalidEndpointId, ColorControl::Id,
+                                                      ColorControl::Attributes::ColorTempPhysicalMaxMireds::Id);
                 ReadPrepareParams params(session);
                 params.mpAttributePathParamsList = read->paths;
                 params.mAttributePathParamsListSize = std::size(read->paths);
@@ -835,6 +902,16 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
         }
 
         template <typename T>
+        static bool decodePlain(TLV::TLVReader &data, AttributeValue &out)
+        {
+            T decoded{};
+            if (DataModel::Decode(data, decoded) != CHIP_NO_ERROR)
+                return false;
+            out.number = static_cast<double>(decoded);
+            return true;
+        }
+
+        template <typename T>
         static bool decodeNullable(TLV::TLVReader &data, AttributeValue &out)
         {
             DataModel::Nullable<T> decoded;
@@ -878,6 +955,26 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
                 return decodeNullable<std::uint16_t>(data, out);
             if (cluster == IlluminanceMeasurement::Id && attribute == IlluminanceMeasurement::Attributes::MeasuredValue::Id)
                 return decodeNullable<std::uint16_t>(data, out);
+            if (cluster == ColorControl::Id) {
+                switch (attribute) {
+                case ColorControl::Attributes::CurrentHue::Id:
+                case ColorControl::Attributes::CurrentSaturation::Id:
+                    return decodePlain<std::uint8_t>(data, out);
+                case ColorControl::Attributes::CurrentX::Id:
+                case ColorControl::Attributes::CurrentY::Id:
+                case ColorControl::Attributes::ColorTemperatureMireds::Id:
+                    return decodePlain<std::uint16_t>(data, out);
+                case ColorControl::Attributes::ColorMode::Id: {
+                    ColorControl::Attributes::ColorMode::TypeInfo::DecodableType mode;
+                    if (DataModel::Decode(data, mode) != CHIP_NO_ERROR)
+                        return false;
+                    out.number = static_cast<double>(static_cast<std::uint8_t>(mode));
+                    return true;
+                }
+                default:
+                    return false;
+                }
+            }
             return false;
         }
 
@@ -940,7 +1037,7 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
         withSession(nodeId,
             [this, raw](Messaging::ExchangeManager &exchangeMgr, const SessionHandle &session) {
                 using namespace chip::app::Clusters;
-                constexpr std::size_t kPathCount = 9;
+                constexpr std::size_t kPathCount = 15;
                 auto *paths = new AttributePathParams[kPathCount];
                 paths[0] = AttributePathParams(kInvalidEndpointId, OnOff::Id, OnOff::Attributes::OnOff::Id);
                 paths[1] = AttributePathParams(kInvalidEndpointId, BooleanState::Id, BooleanState::Attributes::StateValue::Id);
@@ -954,6 +1051,14 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
                 paths[7] = AttributePathParams(kInvalidEndpointId, IlluminanceMeasurement::Id,
                                                IlluminanceMeasurement::Attributes::MeasuredValue::Id);
                 paths[8] = AttributePathParams(0, Descriptor::Id, Descriptor::Attributes::PartsList::Id);
+                paths[9] = AttributePathParams(kInvalidEndpointId, ColorControl::Id, ColorControl::Attributes::CurrentHue::Id);
+                paths[10] = AttributePathParams(kInvalidEndpointId, ColorControl::Id,
+                                                ColorControl::Attributes::CurrentSaturation::Id);
+                paths[11] = AttributePathParams(kInvalidEndpointId, ColorControl::Id, ColorControl::Attributes::CurrentX::Id);
+                paths[12] = AttributePathParams(kInvalidEndpointId, ColorControl::Id, ColorControl::Attributes::CurrentY::Id);
+                paths[13] = AttributePathParams(kInvalidEndpointId, ColorControl::Id,
+                                                ColorControl::Attributes::ColorTemperatureMireds::Id);
+                paths[14] = AttributePathParams(kInvalidEndpointId, ColorControl::Id, ColorControl::Attributes::ColorMode::Id);
                 ReadPrepareParams params(session);
                 params.mpAttributePathParamsList = paths;
                 params.mAttributePathParamsListSize = kPathCount;
@@ -1024,6 +1129,100 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
                     (*shared)(err);
             },
             [shared](CHIP_ERROR err) { (*shared)(err); });
+    }
+
+    void setColorTemperature(std::uint64_t nodeId, std::uint16_t endpoint, std::uint16_t mireds,
+                             std::function<void(CHIP_ERROR)> done)
+    {
+        auto shared = std::make_shared<std::function<void(CHIP_ERROR)>>(std::move(done));
+        withSession(nodeId,
+            [endpoint, mireds, shared](Messaging::ExchangeManager &exchangeMgr, const SessionHandle &session) {
+                using namespace chip::app::Clusters;
+                auto onSuccess = [shared](const ConcreteCommandPath &, const StatusIB &, const DataModel::NullObjectType &) {
+                    (*shared)(CHIP_NO_ERROR);
+                };
+                auto onError = [shared](CHIP_ERROR err) { (*shared)(err); };
+                ColorControl::Commands::MoveToColorTemperature::Type command;
+                command.colorTemperatureMireds = mireds;
+                command.transitionTime = 0;
+                const CHIP_ERROR err = InvokeCommandRequest(&exchangeMgr, session, endpoint, command, onSuccess, onError);
+                if (err != CHIP_NO_ERROR)
+                    (*shared)(err);
+            },
+            [shared](CHIP_ERROR err) { (*shared)(err); });
+    }
+
+    void setHueSaturation(std::uint64_t nodeId, std::uint16_t endpoint, std::uint8_t hue, std::uint8_t saturation,
+                          std::function<void(CHIP_ERROR)> done)
+    {
+        auto shared = std::make_shared<std::function<void(CHIP_ERROR)>>(std::move(done));
+        withSession(nodeId,
+            [endpoint, hue, saturation, shared](Messaging::ExchangeManager &exchangeMgr, const SessionHandle &session) {
+                using namespace chip::app::Clusters;
+                auto onSuccess = [shared](const ConcreteCommandPath &, const StatusIB &, const DataModel::NullObjectType &) {
+                    (*shared)(CHIP_NO_ERROR);
+                };
+                auto onError = [shared](CHIP_ERROR err) { (*shared)(err); };
+                ColorControl::Commands::MoveToHueAndSaturation::Type command;
+                command.hue = hue;
+                command.saturation = saturation;
+                command.transitionTime = 0;
+                const CHIP_ERROR err = InvokeCommandRequest(&exchangeMgr, session, endpoint, command, onSuccess, onError);
+                if (err != CHIP_NO_ERROR)
+                    (*shared)(err);
+            },
+            [shared](CHIP_ERROR err) { (*shared)(err); });
+    }
+
+    // ---- removal ------------------------------------------------------
+
+    struct Removal {
+        Impl *self = nullptr;
+        std::uint64_t nodeId = 0;
+        std::function<void(CHIP_ERROR)> done;
+        std::unique_ptr<CurrentFabricRemover> remover;
+        Callback::Callback<OnCurrentFabricRemove> callback;
+
+        Removal() : callback(&Removal::onRemoved, this) {}
+
+        static void onRemoved(void *context, NodeId, CHIP_ERROR status)
+        {
+            auto *job = static_cast<Removal *>(context);
+            job->self->forget(job->nodeId);
+            auto finish = std::move(job->done);
+            // The remover is still on the stack above us; free it next turn.
+            job->self->post([job] { delete job; });
+            if (finish)
+                finish(status);
+        }
+    };
+
+    // Drops what the stack holds for the node and takes it out of the registry.
+    void forget(std::uint64_t nodeId)
+    {
+        subscriptions.erase(nodeId);
+        if (commissioner)
+            commissioner->SessionMgr()->ExpireAllSessions(ScopedNodeId(nodeId, commissioner->GetFabricIndex()));
+        forgetNode(nodeId);
+        char text[80];
+        std::snprintf(text, sizeof(text), "node 0x%016llx forgotten", static_cast<unsigned long long>(nodeId));
+        log(LogLevel::Info, text);
+    }
+
+    void remove(std::uint64_t nodeId, std::function<void(CHIP_ERROR)> done)
+    {
+        auto *job = new Removal();
+        job->self = this;
+        job->nodeId = nodeId;
+        job->done = std::move(done);
+        job->remover = std::make_unique<CurrentFabricRemover>(commissioner.get());
+        const CHIP_ERROR err = job->remover->RemoveCurrentFabric(nodeId, &job->callback);
+        if (err != CHIP_NO_ERROR) {
+            std::unique_ptr<Removal> owned(job);
+            forget(nodeId);
+            if (owned->done)
+                owned->done(err);
+        }
     }
 
     // ---- commissioning ------------------------------------------------
@@ -1121,6 +1320,30 @@ void Controller::setLevel(std::uint64_t nodeId, std::uint16_t endpoint, std::uin
     m_impl->post([this, nodeId, endpoint, level, done = std::move(done)]() mutable {
         m_impl->setLevel(nodeId, endpoint, level, std::move(done));
     });
+}
+
+void Controller::setColorTemperature(std::uint64_t nodeId, std::uint16_t endpoint, std::uint16_t mireds,
+                                     std::function<void(CHIP_ERROR)> done)
+{
+    Impl *impl = m_impl.get();
+    impl->post([impl, nodeId, endpoint, mireds, done = std::move(done)]() mutable {
+        impl->setColorTemperature(nodeId, endpoint, mireds, std::move(done));
+    });
+}
+
+void Controller::setHueSaturation(std::uint64_t nodeId, std::uint16_t endpoint, std::uint8_t hue, std::uint8_t saturation,
+                                  std::function<void(CHIP_ERROR)> done)
+{
+    Impl *impl = m_impl.get();
+    impl->post([impl, nodeId, endpoint, hue, saturation, done = std::move(done)]() mutable {
+        impl->setHueSaturation(nodeId, endpoint, hue, saturation, std::move(done));
+    });
+}
+
+void Controller::remove(std::uint64_t nodeId, std::function<void(CHIP_ERROR)> done)
+{
+    Impl *impl = m_impl.get();
+    impl->post([impl, nodeId, done = std::move(done)]() mutable { impl->remove(nodeId, std::move(done)); });
 }
 
 void Controller::setOnOff(std::uint64_t nodeId, std::uint16_t endpoint, bool on, std::function<void(CHIP_ERROR)> done)

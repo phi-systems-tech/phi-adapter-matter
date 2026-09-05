@@ -24,6 +24,12 @@ struct EndpointInfo {
     std::string label;
     std::string vendor;
     std::string product;
+    // Color Control, when the endpoint serves it: the capabilities bitmap
+    // (0x01 hue/saturation, 0x08 xy, 0x10 color temperature) and the
+    // temperature range in mireds. Zero when unknown.
+    std::uint16_t colorCapabilities = 0;
+    std::uint16_t colorTempMinMireds = 0;
+    std::uint16_t colorTempMaxMireds = 0;
 };
 
 struct NodeInfo {
@@ -44,6 +50,9 @@ struct Options {
     std::string paaTrustStoreDir;
     // Continue commissioning when device attestation fails.
     bool allowUntrustedAttestation = false;
+    // UDP port the controller listens on; 0 means the Matter default (5540).
+    // Two cores on one host need two ports.
+    std::uint16_t listenPort = 0;
 };
 
 // One reported attribute, reduced to what a channel needs.
@@ -102,6 +111,17 @@ public:
     // Level 0..254 with OnOff coupled, the way a dimmer expects it.
     void setLevel(std::uint64_t nodeId, std::uint16_t endpoint, std::uint8_t level,
                   std::function<void(CHIP_ERROR)> done);
+    // Color temperature in mireds, the cluster's own unit.
+    void setColorTemperature(std::uint64_t nodeId, std::uint16_t endpoint, std::uint16_t mireds,
+                             std::function<void(CHIP_ERROR)> done);
+    // Hue and saturation on the cluster's 0..254 scale.
+    void setHueSaturation(std::uint64_t nodeId, std::uint16_t endpoint, std::uint8_t hue, std::uint8_t saturation,
+                          std::function<void(CHIP_ERROR)> done);
+
+    // Removes this fabric from the device and forgets the node. The node is
+    // forgotten either way; the error says whether the device took part.
+    // A device that did not answer keeps the fabric until it is reset.
+    void remove(std::uint64_t nodeId, std::function<void(CHIP_ERROR)> done);
 
     // Runs a task on the Matter thread.
     void post(std::function<void()> task);
