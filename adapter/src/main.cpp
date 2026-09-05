@@ -933,12 +933,23 @@ private:
     }
 
     // The fabric's public face on the instance card: its label and its
-    // compressed id, which is how a device's fabric list names it.
+    // compressed id, which is how a device's fabric list names it. As the
+    // card's summary line - "host" is a network name to core, and a fabric
+    // is not one.
     void publishFabric()
     {
-        const std::string host = "Fabric " + m_fabricLabel + " (" + m_controller.compressedFabricId() + ")";
+        const std::string id = m_controller.compressedFabricId();
+        const std::string summary = "Fabric " + m_fabricLabel + " (" + id + ")";
+        Json::Value patch(Json::objectValue);
+        patch["summary"] = summary;
+        Json::Value fabric(Json::objectValue);
+        fabric["label"] = m_fabricLabel;
+        fabric["id"] = id;
+        patch["fabric"] = fabric;
+        Json::StreamWriterBuilder builder;
+        builder["indentation"] = "";
         std::string error;
-        if (!sendAdapterMetaUpdated(std::string("{\"host\":") + jsonQuoted(host) + "}", &error)) {
+        if (!sendAdapterMetaUpdated(Json::writeString(builder, patch), &error)) {
             log(phi::LogLevel::Warn, phi::LogCategory::Internal, "Fabric line not published: %1", phi::ScalarList{error},
                 "matter.fabric.publish.failed");
         }
