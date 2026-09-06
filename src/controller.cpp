@@ -11,6 +11,7 @@
 #include <condition_variable>
 #include <cstdio>
 #include <cstring>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -420,6 +421,11 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
 
         if (!loadRegistry(error))
             return false;
+
+        // The SDK's PosixConfig keeps chip_factory/config/counters.ini under
+        // /tmp for every CHIP process on the host unless told otherwise
+        // (phi-chip patch): this instance keeps its own set in its state dir.
+        ::setenv("CHIP_CONFIG_DIR", options.stateDir.c_str(), 1);
 
         err = storage.Init("phi", options.stateDir.c_str());
         if (err != CHIP_NO_ERROR)

@@ -1,3 +1,10 @@
+phi-adapter-matter (0.0.6-1) trixie; urgency=medium
+
+  * The SDK's PosixConfig ini files live in the instance's state dir
+    (CHIP_CONFIG_DIR, phi-chip 1.5.1.0-4) instead of the shared /tmp.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sun, 06 Sep 2026 23:13:44 +0200
+
 phi-adapter-matter (0.0.5-1) trixie; urgency=medium
 
   * phi's own Thread network: the adapter reads otbr-agent's console

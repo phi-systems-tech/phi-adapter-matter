@@ -7,7 +7,7 @@ Build-Depends:
  cmake,
  ninja-build,
  pkgconf,
- phi-chip-dev (>= 1.5.1.0),
+ phi-chip-dev (>= 1.5.1.0-4),
  phi-adapter-sdk-dev (>= 0.8.0)
 Standards-Version: 4.7.0
 Rules-Requires-Root: no
