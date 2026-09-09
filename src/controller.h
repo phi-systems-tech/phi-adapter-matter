@@ -58,6 +58,11 @@ struct Options {
     // UDP port the controller listens on; 0 means the Matter default (5540).
     // Two cores on one host need two ports.
     std::uint16_t listenPort = 0;
+    // HCI adapter index for BLE commissioning (hci0 -> 0). Negative
+    // disables BLE: commissioning then reaches only devices already on
+    // an IP network. The box has no Bluetooth of its own; a USB dongle
+    // and this index are what let a fresh device be commissioned.
+    int bleAdapter = -1;
 };
 
 // One reported attribute, reduced to what a channel needs.

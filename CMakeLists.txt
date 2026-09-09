@@ -66,6 +66,16 @@ target_link_libraries(phi_adapter_matter_ipc
         phi::adapter-sdk
 )
 
+# The Matter SDK (phi::chip) is built with CHIPoBLE enabled, but phi-chip
+# keeps that define private to its own platform target and does not export
+# it. BLE commissioning here calls BLEMgrImpl(), which the platform headers
+# only declare under CHIP_DEVICE_CONFIG_ENABLE_CHIPOBLE, so the adapter has
+# to compile with the same view of BLE as the library it links against.
+target_compile_definitions(phi_adapter_matter_ipc PRIVATE
+    CHIP_DEVICE_CONFIG_ENABLE_CHIPOBLE=1
+    CONFIG_NETWORK_LAYER_BLE=1
+)
+
 set_target_properties(phi_adapter_matter_ipc PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/plugins/adapters"
     INSTALL_RPATH "$ORIGIN"

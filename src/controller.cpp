@@ -53,6 +53,9 @@
 #include <lib/support/logging/CHIPLogging.h>
 #include <platform/CHIPDeviceLayer.h>
 #include <platform/PlatformManager.h>
+#if CHIP_DEVICE_CONFIG_ENABLE_CHIPOBLE
+#include <platform/internal/BLEManager.h>
+#endif
 
 namespace phimatter {
 
@@ -167,6 +170,8 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
 {
     Options options;
     Callbacks callbacks;
+    // BLE central configured at bring-up; drives the discovery type below.
+    bool bleReady = false;
     std::atomic<bool> allowUntrustedAttestation{false};
     std::atomic<bool> loopRunning{false};
 
@@ -457,6 +462,21 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
         err = DeviceControllerFactory::GetInstance().Init(factoryParams);
         if (err != CHIP_NO_ERROR)
             return fail("controller factory init", err);
+
+#if CHIP_DEVICE_CONFIG_ENABLE_CHIPOBLE
+        // A Linux device is a BLE peripheral by default; a commissioner
+        // needs a central. ConfigureBle only records the adapter id and
+        // the role - BlueZ is touched lazily, when commissioning first
+        // scans - so it is safe to call here regardless of a dongle.
+        if (options.bleAdapter >= 0) {
+            err = DeviceLayer::Internal::BLEMgrImpl().ConfigureBle(
+                static_cast<std::uint32_t>(options.bleAdapter), /*aIsCentral=*/true);
+            if (err != CHIP_NO_ERROR)
+                return fail("BLE central configuration", err);
+            bleReady = true;
+            log(LogLevel::Info, "BLE commissioning enabled on hci" + std::to_string(options.bleAdapter));
+        }
+#endif
 
         // Attestation: production PAAs from the package, the SDK's test roots
         // when there are none.
@@ -1412,13 +1432,19 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
                 ByteSpan(commissioningDataset.data(), commissioningDataset.size()));
 
         char text[128];
-        std::snprintf(text, sizeof(text), "commissioning node 0x%016llx over the network%s",
+        std::snprintf(text, sizeof(text), "commissioning node 0x%016llx %s%s",
                       static_cast<unsigned long long>(commissioning->nodeId),
+                      bleReady ? "over BLE or the network" : "over the network",
                       commissioningDataset.empty() ? "" : ", with the Thread dataset");
         log(LogLevel::Info, text);
 
+        // kAll lets the SetUpCodePairer discover a fresh device over BLE
+        // (guided by the pairing code's own rendezvous capabilities) as
+        // well as on-network. Without a BLE central it would fail the BLE
+        // leg, so fall back to network-only when no dongle is configured.
+        const DiscoveryType discovery = bleReady ? DiscoveryType::kAll : DiscoveryType::kDiscoveryNetworkOnly;
         const CHIP_ERROR err = commissioner->PairDevice(commissioning->nodeId, setupCode.c_str(), commissioningParams,
-                                                        DiscoveryType::kDiscoveryNetworkOnly);
+                                                        discovery);
         if (err != CHIP_NO_ERROR) {
             finishCommissioning(err);
             return;

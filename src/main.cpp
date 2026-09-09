@@ -52,6 +52,7 @@ constexpr const char kThreadSocketField[] = "threadSocket";
 constexpr const char kJoinThreadField[] = "joinThread";
 constexpr const char kDefaultThreadSocket[] = "/run/openthread-wpan0.sock";
 constexpr const char kListenPortField[] = "listenPort";
+constexpr const char kBleAdapterField[] = "bleAdapter";
 constexpr const char kConnectivityChannel[] = "connectivity";
 constexpr const char kColorChannel[] = "color";
 constexpr const char kColorTemperatureChannel[] = "colortemp";
@@ -469,6 +470,7 @@ protected:
         options.allowUntrustedAttestation = m_allowUntrusted;
         options.listenPort = m_listenPort;
         options.fabricLabel = m_fabricLabel;
+        options.bleAdapter = m_bleAdapter;
 
         phimatter::Callbacks callbacks;
         callbacks.log = [this](phimatter::LogLevel level, const std::string &message) {
@@ -782,6 +784,8 @@ private:
         m_fabricLabel = name.empty() ? kDefaultFabricLabel : name.substr(0, 32);
         const int port = meta.get(kListenPortField, 0).asInt();
         m_listenPort = (port > 0 && port < 65536) ? static_cast<std::uint16_t>(port) : 0;
+        const int ble = meta.get(kBleAdapterField, -1).asInt();
+        m_bleAdapter = (ble >= 0 && ble <= 15) ? ble : -1;
         const std::string socket = trimmed(meta.get(kThreadSocketField, "").asString());
         m_threadSocket = socket.empty() ? kDefaultThreadSocket : socket;
     }
@@ -1446,6 +1450,7 @@ private:
     bool m_nodesLabeled = false;
     bool m_started = false;
     bool m_allowUntrusted = false;
+    int m_bleAdapter = -1;
 };
 
 class MatterFactory final : public phi::AdapterFactory
@@ -1536,7 +1541,7 @@ protected:
             },
             "instance":{
                 "title":"Matter fabric",
-                "description":"Devices join this fabric with their pairing code: the 11-digit manual code or the text behind the QR code (MT:...). The device must already be on the network.",
+                "description":"Devices join this fabric with their pairing code: the 11-digit manual code or the text behind the QR code (MT:...). A device already on the network is reached directly; a fresh one is commissioned over Bluetooth when a dongle is set in settings.",
                 "layout":{"gridUnits":24,"gutter":[12,8],"defaults":{"span":{"xs":24,"sm":24,"md":12,"lg":12,"xl":12,"xxl":12},"labelPosition":"top","labelSpan":8,"controlSpan":16,"actionPosition":"inline","actionSpan":6}},
                 "fields":[
                     {"key":"pairingCode","type":"String","label":"Pairing code","description":"The code printed on the device or shown by its maker's app (Hue: Settings, Smart home, Matter). Either the 11-digit manual code or the text behind the QR code.","placeholder":"MT:... or 3497-011-2332","flags":["Required","Transient"],"parentActionId":"commission"},
@@ -1544,6 +1549,7 @@ protected:
                     {"key":"shareDevice","type":"Select","label":"Device to share","description":"The other app adds the device with the code this shows; it stays in this fabric too.","flags":["Required","Transient"],"parentActionId":"share"},
                     {"key":"removeDevice","type":"Select","label":"Device to remove","description":"A bridge goes with everything behind it.","flags":["Required","Transient"],"parentActionId":"remove"},
                     {"key":"allowUntrustedAttestation","type":"Boolean","label":"Allow uncertified devices","description":"Continue commissioning when the device's attestation certificate is not signed by a known Matter PAA. Needed for sample apps and development boards.","default":false},
+                    {"key":"bleAdapter","type":"Int","label":"Bluetooth adapter for commissioning","description":"HCI index of a USB Bluetooth dongle, used to commission a device that is not yet on any network (hci0 is 0). Leave at -1 to disable Bluetooth: only devices already on the network can then be added. The box has no Bluetooth of its own. Takes effect when the instance restarts.","default":-1,"min":-1,"max":15},
                     {"key":"listenPort","type":"Int","label":"UDP port","description":"The port this controller answers on. Matter's default is 5540; a second core on the same host needs another one. Takes effect when the instance restarts.","default":5540,"min":1024,"max":65535},
                     {"key":"threadSocket","type":"String","label":"Border router console","description":"otbr-agent's console socket, where phi's own Thread network is read from. Leave it unless the Thread interface is not wpan0.","default":"/run/openthread-wpan0.sock","placeholder":"/run/openthread-wpan0.sock"}
                 ]
