@@ -1,3 +1,19 @@
+phi-adapter-matter (0.0.7-1) trixie; urgency=medium
+
+  * BLE commissioning is wired into the controller and dormant until a
+    Bluetooth adapter index is configured: the meta field "bleAdapter"
+    (HCI index, -1 disables) switches the Linux platform to the central
+    role and lets commission() discover over BLE as well as on-network.
+    Without a dongle nothing changes.
+  * The adapter declares its own CHIP_DEVICE_CONFIG_ENABLE_CHIPOBLE view,
+    because phi-chip keeps that definition private to its platform target.
+  * docs: a Thread lamp bring-up runbook covering both commissioning paths.
+  * Build: the local phi-adapter-sdk checkout is now the default here as it
+    already was in the other seven adapters. The package is unaffected,
+    debian/rules still configures against phi-adapter-sdk-dev.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Wed, 09 Sep 2026 18:15:00 +0200
+
 phi-adapter-matter (0.0.6-1) trixie; urgency=medium
 
   * The SDK's PosixConfig ini files live in the instance's state dir
