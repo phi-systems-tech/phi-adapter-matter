@@ -21,7 +21,7 @@ set(PHI_ADAPTER_SDK_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../phi-adapter-sdk" 
 )
 option(PHI_ADAPTER_MATTER_USE_LOCAL_ADAPTER_SDK
     "Use local ../phi-adapter-sdk checkout when available"
-    OFF
+    ON
 )
 
 if(NOT TARGET phi::adapter-sdk)
