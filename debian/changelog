@@ -1,3 +1,16 @@
+phi-adapter-matter (0.0.9-1) trixie; urgency=medium
+
+  * A commissioning attempt gets three minutes instead of ninety seconds.
+    Ninety was measured against the wrong half of the job: a device
+    answers in seconds, and the long part comes after, when it joins
+    Thread, registers with the border router's SRP server and only then
+    becomes findable at its operational address. A bulb reached that last
+    step and was cut off at ninety while the SDK was announcing another
+    sixty seconds of retries. The action's declared patience follows the
+    constant, so core waits it out.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Fri, 11 Sep 2026 00:45:00 +0200
+
 phi-adapter-matter (0.0.8-1) trixie; urgency=medium
 
   * The bleAdapter setting no longer claims the box has no Bluetooth of

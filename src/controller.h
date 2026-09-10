@@ -22,7 +22,15 @@ enum class LogLevel { Trace, Debug, Info, Warn, Error };
 // deadline the attempt would sit there and block the next one. It is in the
 // header because the action that starts one has to declare a patience that
 // outlasts it, or core answers first and the verdict is lost.
-constexpr std::uint32_t kCommissioningDeadlineSeconds = 90;
+//
+// Ninety was measured against the wrong half of the job. A device answers in
+// seconds, and then the long part starts: it joins Thread, registers with the
+// border router's SRP server, and only then can the controller find it at its
+// operational address. A Nanoleaf bulb got as far as that last step and was
+// cut off at ninety while the SDK was announcing another sixty seconds of
+// retries. Three minutes covers a join that is merely slow; a device that is
+// not answering at all has already said so long before.
+constexpr std::uint32_t kCommissioningDeadlineSeconds = 180;
 
 struct EndpointInfo {
     std::uint16_t endpoint = 0;
