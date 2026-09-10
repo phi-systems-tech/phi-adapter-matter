@@ -1,3 +1,11 @@
+phi-adapter-matter (0.0.8-1) trixie; urgency=medium
+
+  * The bleAdapter setting no longer claims the box has no Bluetooth of
+    its own: zyclop has one, and which controller commissioning uses is
+    what the setting is for.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Thu, 10 Sep 2026 20:02:14 +0200
+
 phi-adapter-matter (0.0.7-1) trixie; urgency=medium
 
   * BLE commissioning is wired into the controller and dormant until a

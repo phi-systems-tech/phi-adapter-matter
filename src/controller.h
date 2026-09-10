@@ -60,8 +60,9 @@ struct Options {
     std::uint16_t listenPort = 0;
     // HCI adapter index for BLE commissioning (hci0 -> 0). Negative
     // disables BLE: commissioning then reaches only devices already on
-    // an IP network. The box has no Bluetooth of its own; a USB dongle
-    // and this index are what let a fresh device be commissioned.
+    // an IP network, which a device out of its box is not. Which
+    // controller that is depends on the machine - built in on one, a USB
+    // dongle on the next - so it is a setting rather than a default.
     int bleAdapter = -1;
 };
 
