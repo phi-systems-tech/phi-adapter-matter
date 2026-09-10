@@ -69,11 +69,6 @@ constexpr FabricId kFabricId = 1;
 constexpr const char *kRegistryFile = "nodes.json";
 constexpr std::uint16_t kSubscribeMinIntervalSeconds = 0;
 constexpr std::uint16_t kSubscribeMaxIntervalSeconds = 300;
-// How long a commissioning attempt may run. The SDK's pairer waits for a
-// commissionable node with the code's discriminator for as long as it is
-// asked to; a device whose window is shut never answers, and without a
-// deadline the attempt would sit there and block the next one.
-constexpr std::uint32_t kCommissioningDeadlineSeconds = 90;
 // PBKDF iterations for the window's PASE verifier; the spec allows 1000..100000.
 constexpr std::uint32_t kSpake2pIterations = 1000;
 
@@ -459,15 +454,17 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
         Credentials::SetGroupDataProvider(&groupDataProvider);
         factoryParams.groupDataProvider = &groupDataProvider;
 
-        err = DeviceControllerFactory::GetInstance().Init(factoryParams);
-        if (err != CHIP_NO_ERROR)
-            return fail("controller factory init", err);
-
 #if CHIP_DEVICE_CONFIG_ENABLE_CHIPOBLE
-        // A Linux device is a BLE peripheral by default; a commissioner
-        // needs a central. ConfigureBle only records the adapter id and
-        // the role - BlueZ is touched lazily, when commissioning first
-        // scans - so it is safe to call here regardless of a dongle.
+        // A Linux device is a BLE peripheral by default; a commissioner needs
+        // a central, and this has to be said before the factory brings up the
+        // CHIP stack. BLEManagerImpl::_Init reads the role once, to decide
+        // whether to arm advertising autostart, and a controller that arms it
+        // walks into the peripheral path at its first scan: it exports a GATT
+        // service it never built, then asks for the discriminator of a
+        // commissionable device it is not, and the SDK ends the process on the
+        // spot. Upstream's own controller (chip-tool, CHIPCommand.cpp) calls it
+        // here for the same reason. BlueZ itself is touched lazily, at that
+        // first scan, so this stays safe with no adapter present.
         if (options.bleAdapter >= 0) {
             err = DeviceLayer::Internal::BLEMgrImpl().ConfigureBle(
                 static_cast<std::uint32_t>(options.bleAdapter), /*aIsCentral=*/true);
@@ -477,6 +474,10 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
             log(LogLevel::Info, "BLE commissioning enabled on hci" + std::to_string(options.bleAdapter));
         }
 #endif
+
+        err = DeviceControllerFactory::GetInstance().Init(factoryParams);
+        if (err != CHIP_NO_ERROR)
+            return fail("controller factory init", err);
 
         // Attestation: production PAAs from the package, the SDK's test roots
         // when there are none.

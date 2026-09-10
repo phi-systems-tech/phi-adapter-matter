@@ -3,6 +3,23 @@ phi-adapter-matter (0.0.8-1) trixie; urgency=medium
   * The bleAdapter setting no longer claims the box has no Bluetooth of
     its own: zyclop has one, and which controller commissioning uses is
     what the setting is for.
+  * BLE commissioning no longer ends the process. The controller said it
+    wanted the central role only after the factory had brought the CHIP
+    stack up, and BLEManagerImpl reads that role once, when it decides
+    whether to arm advertising autostart. A controller that arms it walks
+    into the peripheral path at its first scan, exports a GATT service it
+    never built and then asks for the discriminator of a commissionable
+    device it is not, which the SDK answers with VerifyOrDie. Every
+    attempt to add a device killed the adapter. ConfigureBle now runs
+    before the factory, where upstream's own controller calls it.
+  * The commission action declares a timeout that outlasts the attempt.
+    Core answered for this adapter after its ordinary 10 seconds while
+    the pairer was still waiting out its 90, so the phone was told
+    "Command timed out" and the adapter's own verdict - whether a device
+    answered at all - arrived with nobody listening. The figure rides in
+    the action's meta, which the SDK forwards verbatim: a field of its
+    own would have moved the struct every adapter is compiled against
+    without moving the soname.
 
  -- Marius Schumacher <marius.schumacher@phisys.com>  Thu, 10 Sep 2026 20:02:14 +0200
 

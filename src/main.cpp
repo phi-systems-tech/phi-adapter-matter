@@ -88,6 +88,18 @@ std::string jsonQuoted(std::string_view text)
     return Json::writeString(builder, value);
 }
 
+/// The commission action's meta, with the deadline core has to wait out.
+///
+/// Derived from the pairer's own deadline rather than written twice: the two
+/// have to agree, and a literal here would drift the first time the constant
+/// moves. The slack is what the adapter needs to turn its own timeout into an
+/// answer before core stops listening.
+std::string commissionMetaJson()
+{
+    return std::string(R"({"placement":"card","kind":"open_dialog","requiresAck":true,"timeoutMs":)")
+        + std::to_string((phimatter::kCommissioningDeadlineSeconds + 10) * 1000) + "}";
+}
+
 Json::Value parseObject(const std::string &text)
 {
     Json::Value root;
@@ -1489,7 +1501,15 @@ protected:
         // A dialog with the fields bound to this action by parentActionId;
         // the UI sends their values as the action's params.
         commission.hasForm = true;
-        commission.metaJson = R"({"placement":"card","kind":"open_dialog","requiresAck":true})";
+        // timeoutMs: core answers in this adapter's place once its own
+        // deadline passes, and 10 seconds - the figure for ordinary traffic -
+        // is a fraction of what commissioning takes. The verdict that matters
+        // is the adapter's, which says whether a device answered at all, so
+        // the patience declared here outlasts the attempt rather than matching
+        // it. It rides in meta because the SDK forwards meta verbatim: a field
+        // of its own would move every adapter's struct without moving the
+        // soname.
+        commission.metaJson = commissionMetaJson();
         caps.instanceActions.push_back(commission);
 
         v1::AdapterActionDescriptor share;

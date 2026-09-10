@@ -16,6 +16,14 @@ namespace phimatter {
 
 enum class LogLevel { Trace, Debug, Info, Warn, Error };
 
+// How long a commissioning attempt may run. The SDK's pairer waits for a
+// commissionable node with the code's discriminator for as long as it is
+// asked to; a device whose window is shut never answers, and without a
+// deadline the attempt would sit there and block the next one. It is in the
+// header because the action that starts one has to declare a patience that
+// outlasts it, or core answers first and the verdict is lost.
+constexpr std::uint32_t kCommissioningDeadlineSeconds = 90;
+
 struct EndpointInfo {
     std::uint16_t endpoint = 0;
     std::vector<std::uint32_t> deviceTypes;
