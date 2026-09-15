@@ -728,7 +728,7 @@ protected:
             std::snprintf(text, sizeof(text), "Commissioned as node 0x%llx", static_cast<unsigned long long>(nodeId));
             done.resultValue = v1::ScalarValue(std::string(text));
             // The code is single-use; clear it from the form.
-            done.formValuesJson = std::string("{\"") + kPairingCodeField + "\":\"\"}";
+            done.formValues = {{kPairingCodeField, v1::ScalarValue(std::string())}};
             submitAction(std::move(done));
             adoptNode(nodeId);
         });
@@ -878,7 +878,7 @@ private:
             Json::StreamWriterBuilder builder;
             builder["indentation"] = "";
             done.resultValueJson = Json::writeString(builder, result);
-            done.formValuesJson = std::string("{\"") + kShareDeviceField + "\":\"\"}";
+            done.formValues = {{kShareDeviceField, v1::ScalarValue(std::string())}};
             submitAction(std::move(done));
         });
     }
@@ -987,7 +987,7 @@ private:
                                                    + phimatter::errorText(err) + "), a factory reset clears it");
             }
             if (formField)
-                done.formValuesJson = std::string("{\"") + formField + "\":\"\"}";
+                done.formValues = {{formField, v1::ScalarValue(std::string())}};
             submitAction(std::move(done));
         });
     }
@@ -1086,25 +1086,18 @@ private:
     // The nodes of this fabric as the choices of a Select field: the UI asks
     // for them when it opens the dialog (loadFormOnOpen), so nobody has to
     // know a node id. A node that never answered describe() shows by its id.
-    std::string nodeChoicesJson(const char *field) const
+    v1::AdapterFieldChoicesList nodeChoices(const char *field) const
     {
-        Json::Value choices(Json::arrayValue);
+        v1::AdapterConfigOptionList choices;
         std::lock_guard<std::mutex> lock(m_specsMutex);
         for (const std::uint64_t nodeId : m_controller.nodes()) {
-            Json::Value choice(Json::objectValue);
-            choice["value"] = nodeText(nodeId);
             std::string detail = nodeText(nodeId);
             const auto address = m_nodeAddresses.find(nodeId);
             if (address != m_nodeAddresses.end() && !address->second.empty())
                 detail += ", " + address->second;
-            choice["label"] = nodeDisplayName(nodeId) + " (" + detail + ")";
-            choices.append(choice);
+            choices.push_back({nodeText(nodeId), nodeDisplayName(nodeId) + " (" + detail + ")"});
         }
-        Json::Value root(Json::objectValue);
-        root[field] = choices;
-        Json::StreamWriterBuilder builder;
-        builder["indentation"] = "";
-        return Json::writeString(builder, root);
+        return {{field, std::move(choices)}};
     }
 
     // Answers a dialog that is only opening: the choices, nothing done.
@@ -1114,7 +1107,7 @@ private:
         if (params.isMember(field) && !trimmed(params[field].asString()).empty())
             return false;
         resp.status = v1::CmdStatus::Success;
-        resp.fieldChoicesJson = nodeChoicesJson(field);
+        resp.fieldChoices = nodeChoices(field);
         submitAction(std::move(resp));
         return true;
     }
@@ -1551,30 +1544,89 @@ protected:
         return caps;
     }
 
-    phi::JsonText configSchemaJson() const override
+    std::optional<v1::AdapterConfigSchema> configSchema() const override
     {
-        return R"({
-            "factory":{
-                "title":"Matter",
-                "description":"A Matter controller with a fabric of its own. Nothing to configure here; add an instance and commission devices there.",
-                "fields":[]
-            },
-            "instance":{
-                "title":"Matter fabric",
-                "description":"Devices join this fabric with their pairing code: the 11-digit manual code or the text behind the QR code (MT:...). A device already on the network is reached directly; a fresh one is commissioned over Bluetooth when a dongle is set in settings.",
-                "layout":{"gridUnits":24,"gutter":[12,8],"defaults":{"span":{"xs":24,"sm":24,"md":12,"lg":12,"xl":12,"xxl":12},"labelPosition":"top","labelSpan":8,"controlSpan":16,"actionPosition":"inline","actionSpan":6}},
-                "fields":[
-                    {"key":"pairingCode","type":"String","label":"Pairing code","description":"The code printed on the device or shown by its maker's app (Hue: Settings, Smart home, Matter). Either the 11-digit manual code or the text behind the QR code.","placeholder":"MT:... or 3497-011-2332","flags":["Required","Transient"],"parentActionId":"commission"},
-                    {"key":"joinThread","type":"Boolean","label":"Join phi's Thread network","description":"A device with a Thread radio joins the network phi's own border router runs. Off, it is left on whatever network its maker's app put it on.","default":true,"flags":["Transient"],"parentActionId":"commission"},
-                    {"key":"shareDevice","type":"Select","label":"Device to share","description":"The other app adds the device with the code this shows; it stays in this fabric too.","flags":["Required","Transient"],"parentActionId":"share"},
-                    {"key":"removeDevice","type":"Select","label":"Device to remove","description":"A bridge goes with everything behind it.","flags":["Required","Transient"],"parentActionId":"remove"},
-                    {"key":"allowUntrustedAttestation","type":"Boolean","label":"Allow uncertified devices","description":"Continue commissioning when the device's attestation certificate is not signed by a known Matter PAA. Needed for sample apps and development boards.","default":false},
-                    {"key":"bleAdapter","type":"Int","label":"Bluetooth adapter for commissioning","description":"HCI index of the Bluetooth controller used to commission a device that is not yet on any network (hci0 is 0). Leave at -1 to disable Bluetooth: only devices already on the network can then be added. Takes effect when the instance restarts.","default":-1,"min":-1,"max":15},
-                    {"key":"listenPort","type":"Int","label":"UDP port","description":"The port this controller answers on. Matter's default is 5540; a second core on the same host needs another one. Takes effect when the instance restarts.","default":5540,"min":1024,"max":65535},
-                    {"key":"threadSocket","type":"String","label":"Border router console","description":"otbr-agent's console socket, where phi's own Thread network is read from. Leave it unless the Thread interface is not wpan0.","default":"/run/openthread-wpan0.sock","placeholder":"/run/openthread-wpan0.sock"}
-                ]
-            }
-        })";
+        using Type = v1::AdapterConfigFieldType;
+        using Flag = v1::AdapterConfigFieldFlag;
+        auto field = [](const char *key, Type type, const char *label, const char *description) {
+            v1::AdapterConfigField out;
+            out.key = key;
+            out.type = type;
+            out.label = label;
+            out.description = description;
+            return out;
+        };
+
+        v1::AdapterConfigSchema schema;
+        schema.factory.title = "Matter";
+        schema.factory.description = "A Matter controller with a fabric of its own. Nothing to configure here; add an "
+                                     "instance and commission devices there.";
+
+        v1::AdapterConfigSection &instance = schema.instance;
+        instance.title = "Matter fabric";
+        instance.description = "Devices join this fabric with their pairing code: the 11-digit manual code or the text "
+                               "behind the QR code (MT:...). A device already on the network is reached directly; a "
+                               "fresh one is commissioned over Bluetooth when a dongle is set in settings.";
+        // The instance settings: two columns, the long labels given room.
+        instance.layout.width = v1::AdapterConfigSize::Wide;
+        instance.layout.columns = 2;
+        instance.layout.labelWidth = v1::AdapterConfigSize::Wide;
+
+        v1::AdapterConfigField pairingCode =
+            field(kPairingCodeField, Type::String, "Pairing code",
+                  "The code printed on the device or shown by its maker's app (Hue: Settings, Smart home, Matter). "
+                  "Either the 11-digit manual code or the text behind the QR code.");
+        pairingCode.placeholder = "MT:... or 3497-011-2332";
+        pairingCode.flags = Flag::Required | Flag::Transient;
+        pairingCode.parentActionId = kCommissionAction;
+        v1::AdapterConfigField joinThread =
+            field(kJoinThreadField, Type::Boolean, "Join phi's Thread network",
+                  "A device with a Thread radio joins the network phi's own border router runs. Off, it is left on "
+                  "whatever network its maker's app put it on.");
+        joinThread.defaultValue = true;
+        joinThread.flags = Flag::Transient;
+        joinThread.parentActionId = kCommissionAction;
+        v1::AdapterConfigField shareDevice =
+            field(kShareDeviceField, Type::Select, "Device to share",
+                  "The other app adds the device with the code this shows; it stays in this fabric too.");
+        shareDevice.flags = Flag::Required | Flag::Transient;
+        shareDevice.parentActionId = kShareAction;
+        v1::AdapterConfigField removeDevice =
+            field(kRemoveDeviceField, Type::Select, "Device to remove", "A bridge goes with everything behind it.");
+        removeDevice.flags = Flag::Required | Flag::Transient;
+        removeDevice.parentActionId = kRemoveAction;
+
+        v1::AdapterConfigField allowUntrusted =
+            field(kAllowUntrustedField, Type::Boolean, "Allow uncertified devices",
+                  "Continue commissioning when the device's attestation certificate is not signed by a known Matter "
+                  "PAA. Needed for sample apps and development boards.");
+        allowUntrusted.defaultValue = false;
+        v1::AdapterConfigField bleAdapter =
+            field(kBleAdapterField, Type::Integer, "Bluetooth adapter",
+                  "HCI index of the Bluetooth controller used to commission a device that is not yet on any network "
+                  "(hci0 is 0). Leave at -1 to disable Bluetooth: only devices already on the network can then be "
+                  "added. Takes effect when the instance restarts.");
+        bleAdapter.defaultValue = std::int64_t{-1};
+        bleAdapter.metaJson = R"({"min":-1,"max":15})";
+        bleAdapter.layout.controlWidth = v1::AdapterConfigSize::Narrow;
+        v1::AdapterConfigField listenPort =
+            field(kListenPortField, Type::Integer, "UDP port",
+                  "The port this controller answers on. Matter's default is 5540; a second core on the same host needs "
+                  "another one. Takes effect when the instance restarts.");
+        listenPort.defaultValue = std::int64_t{5540};
+        listenPort.metaJson = R"({"min":1024,"max":65535})";
+        listenPort.layout.controlWidth = v1::AdapterConfigSize::Narrow;
+        v1::AdapterConfigField threadSocket =
+            field(kThreadSocketField, Type::String, "Border router console",
+                  "otbr-agent's console socket, where phi's own Thread network is read from. Leave it unless the "
+                  "Thread interface is not wpan0.");
+        threadSocket.defaultValue = v1::Utf8String("/run/openthread-wpan0.sock");
+        threadSocket.placeholder = "/run/openthread-wpan0.sock";
+        threadSocket.layout.cells = 2;
+
+        instance.fields = {pairingCode, joinThread, shareDevice, removeDevice,
+                           allowUntrusted, bleAdapter, listenPort, threadSocket};
+        return schema;
     }
 
     std::unique_ptr<phi::AdapterInstance> createInstance(const phi::ExternalId &externalId) override

@@ -1,3 +1,13 @@
+phi-adapter-matter (0.0.10-1) trixie; urgency=medium
+
+  * The schema is an AdapterConfigSchema the SDK writes (SDK 0.14): the
+    settings are two columns in a wide dialog, the ports short, the
+    Bluetooth adapter and UDP port Integer fields at last - "Int" was no
+    type core knew, so both had been plain text boxes.
+  * Form values and node choices go out typed.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 15 Sep 2026 13:13:07 +0200
+
 phi-adapter-matter (0.0.9-1) trixie; urgency=medium
 
   * A commissioning attempt gets three minutes instead of ninety seconds.
