@@ -1,3 +1,9 @@
+phi-adapter-matter (0.0.13-1) trixie; urgency=medium
+
+  * Built against SDK 0.17.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 15 Sep 2026 17:27:44 +0200
+
 phi-adapter-matter (0.0.12-1) trixie; urgency=medium
 
   * Built against SDK 0.16: the action kind is gone.

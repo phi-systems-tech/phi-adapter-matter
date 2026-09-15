@@ -8,7 +8,7 @@ Build-Depends:
  ninja-build,
  pkgconf,
  phi-chip-dev (>= 1.5.1.0-4),
- phi-adapter-sdk-dev (>= 0.16.0)
+ phi-adapter-sdk-dev (>= 0.17.0)
 Standards-Version: 4.7.0
 Rules-Requires-Root: no
 Homepage: https://github.com/phi-systems-tech/phi-adapter-matter
@@ -18,7 +18,7 @@ Architecture: any
 Depends:
  ${shlibs:Depends},
  ${misc:Depends},
- phi-adapter-sdk (>= 0.16.0),
+ phi-adapter-sdk (>= 0.17.0),
  avahi-daemon
 Suggests: phi-chip-tools
 Built-Using: ${chip:Built-Using}
