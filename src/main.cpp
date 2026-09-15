@@ -80,26 +80,6 @@ std::int64_t nowMs()
     return std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()).count();
 }
 
-std::string jsonQuoted(std::string_view text)
-{
-    const Json::Value value{std::string(text)};
-    Json::StreamWriterBuilder builder;
-    builder["indentation"] = "";
-    return Json::writeString(builder, value);
-}
-
-/// The commission action's meta, with the deadline core has to wait out.
-///
-/// Derived from the pairer's own deadline rather than written twice: the two
-/// have to agree, and a literal here would drift the first time the constant
-/// moves. The slack is what the adapter needs to turn its own timeout into an
-/// answer before core stops listening.
-std::string commissionMetaJson()
-{
-    return std::string(R"({"placement":"card","kind":"open_dialog","requiresAck":true,"timeoutMs":)")
-        + std::to_string((phimatter::kCommissioningDeadlineSeconds + 10) * 1000) + "}";
-}
-
 Json::Value parseObject(const std::string &text)
 {
     Json::Value root;
@@ -866,18 +846,13 @@ private:
                 return;
             }
             done.status = v1::CmdStatus::Success;
-            done.resultType = v1::ActionResultType::String;
             // A result the UI can show as more than a sentence: the code to
             // type, and the QR payload to scan, beside the text.
-            Json::Value result(Json::objectValue);
-            result["text"] = "Node " + nodeText(nodeId) + " is open for " + std::to_string(kShareWindowSeconds / 60)
+            done.resultType = v1::ActionResultType::Display;
+            done.display.text = "Node " + nodeText(nodeId) + " is open for " + std::to_string(kShareWindowSeconds / 60)
                 + " minutes. Scan the code with the other app, or enter the pairing code there.";
-            result["code"] = manual;
-            if (!qr.empty())
-                result["qr"] = qr;
-            Json::StreamWriterBuilder builder;
-            builder["indentation"] = "";
-            done.resultValueJson = Json::writeString(builder, result);
+            done.display.code = manual;
+            done.display.qr = qr;
             done.formValues = {{kShareDeviceField, v1::ScalarValue(std::string())}};
             submitAction(std::move(done));
         });
@@ -909,19 +884,16 @@ private:
             return;
         }
         publishFabric();
-        Json::Value result(Json::objectValue);
         std::string text = thread.summary();
         if (!thread.panId.empty())
             text += ", PAN " + thread.panId;
         if (!thread.extPanId.empty())
             text += ", extended PAN " + thread.extPanId;
         text += ". The code is the active operational dataset with the network key: paste it into a controller that is to commission devices into this network.";
-        result["text"] = text;
-        result["code"] = thread.datasetHex;
         resp.status = v1::CmdStatus::Success;
-        Json::StreamWriterBuilder builder;
-        builder["indentation"] = "";
-        resp.resultValueJson = Json::writeString(builder, result);
+        resp.resultType = v1::ActionResultType::Display;
+        resp.display.text = text;
+        resp.display.code = thread.datasetHex;
         submitAction(std::move(resp));
     }
 
@@ -1135,18 +1107,11 @@ private:
         const phimatter::ThreadNetwork thread = threadNetwork();
         if (thread.available)
             summary += " \u00b7 " + thread.summary();
-        Json::Value patch(Json::objectValue);
         // The controller lives on this machine; that is the instance's host.
-        patch["host"] = "localhost";
-        patch["summary"] = summary;
-        Json::Value fabric(Json::objectValue);
-        fabric["label"] = m_fabricLabel;
-        fabric["id"] = id;
-        patch["fabric"] = fabric;
-        Json::StreamWriterBuilder builder;
-        builder["indentation"] = "";
         std::string error;
-        if (!sendAdapterMetaUpdated(Json::writeString(builder, patch), &error)) {
+        if (!sendAdapterMetaUpdated({{"host", v1::ScalarValue(std::string("localhost"))},
+                                     {"summary", v1::ScalarValue(summary)}},
+                                    &error)) {
             log(phi::LogLevel::Warn, phi::LogCategory::Internal, "Fabric line not published: %1", phi::ScalarList{error},
                 "matter.fabric.publish.failed");
         }
@@ -1502,7 +1467,11 @@ protected:
         // it. It rides in meta because the SDK forwards meta verbatim: a field
         // of its own would move every adapter's struct without moving the
         // soname.
-        commission.metaJson = commissionMetaJson();
+        commission.kind = v1::AdapterActionKind::OpenDialog;
+        // Derived from the pairer's own deadline rather than written twice;
+        // the slack is what the adapter needs to turn its own timeout into an
+        // answer before core stops listening.
+        commission.timeoutMs = (phimatter::kCommissioningDeadlineSeconds + 10) * 1000;
         caps.instanceActions.push_back(commission);
 
         v1::AdapterActionDescriptor share;
@@ -1510,14 +1479,14 @@ protected:
         share.label = "Share with another app";
         share.description = "Opens the device for Apple Home, Google Home or the maker's app for five minutes and shows the code to enter there.";
         share.hasForm = true;
-        share.metaJson = R"({"placement":"card","kind":"open_dialog","requiresAck":true,"loadFormOnOpen":true})";
+        share.kind = v1::AdapterActionKind::OpenDialog;
+        share.loadFormOnOpen = true;
         caps.instanceActions.push_back(share);
 
         v1::AdapterActionDescriptor thread;
         thread.id = kThreadAction;
         thread.label = "Thread network";
         thread.description = "The network phi's own border router runs, and its dataset for other controllers.";
-        thread.metaJson = R"({"placement":"card","kind":"command","requiresAck":true})";
         caps.instanceActions.push_back(thread);
 
         // The device menu's Delete, by the name the UI looks for. Placed on
@@ -1527,8 +1496,10 @@ protected:
         deviceDelete.label = "Remove from fabric";
         deviceDelete.description = "Takes this fabric off the device's node and forgets it. A bridge goes with everything behind it.";
         deviceDelete.danger = true;
-        deviceDelete.confirmJson = R"({"title":"Remove from fabric?","message":"The node leaves this fabric; a bridge takes every device behind it along. Continue?","okText":"Remove","cancelText":"Cancel","danger":true})";
-        deviceDelete.metaJson = R"({"placement":"device","kind":"command","requiresAck":true})";
+        deviceDelete.placement = v1::AdapterActionPlacement::Device;
+        deviceDelete.confirm = {"Remove from fabric?",
+                                "The node leaves this fabric; a bridge takes every device behind it along. Continue?",
+                                "Remove", "Cancel"};
         caps.instanceActions.push_back(deviceDelete);
 
         v1::AdapterActionDescriptor remove;
@@ -1537,10 +1508,10 @@ protected:
         remove.description = "Takes this fabric off the device and forgets it here.";
         remove.hasForm = true;
         remove.danger = true;
-        remove.metaJson = R"({"placement":"card","kind":"open_dialog","requiresAck":true,"loadFormOnOpen":true})";
+        remove.kind = v1::AdapterActionKind::OpenDialog;
+        remove.loadFormOnOpen = true;
         caps.instanceActions.push_back(remove);
 
-        caps.defaultsJson = std::string("{\"name\":") + jsonQuoted(kDisplayName) + ",\"host\":\"localhost\",\"" + kAllowUntrustedField + "\":false,\"" + kListenPortField + "\":5540}";
         return caps;
     }
 
@@ -1607,14 +1578,16 @@ protected:
                   "(hci0 is 0). Leave at -1 to disable Bluetooth: only devices already on the network can then be "
                   "added. Takes effect when the instance restarts.");
         bleAdapter.defaultValue = std::int64_t{-1};
-        bleAdapter.metaJson = R"({"min":-1,"max":15})";
+        bleAdapter.minValue = -1;
+        bleAdapter.maxValue = 15;
         bleAdapter.layout.controlWidth = v1::AdapterConfigSize::Narrow;
         v1::AdapterConfigField listenPort =
             field(kListenPortField, Type::Integer, "UDP port",
                   "The port this controller answers on. Matter's default is 5540; a second core on the same host needs "
                   "another one. Takes effect when the instance restarts.");
         listenPort.defaultValue = std::int64_t{5540};
-        listenPort.metaJson = R"({"min":1024,"max":65535})";
+        listenPort.minValue = 1024;
+        listenPort.maxValue = 65535;
         listenPort.layout.controlWidth = v1::AdapterConfigSize::Narrow;
         v1::AdapterConfigField threadSocket =
             field(kThreadSocketField, Type::String, "Border router console",

@@ -1,3 +1,13 @@
+phi-adapter-matter (0.0.11-1) trixie; urgency=medium
+
+  * Actions, the device menu's confirmation, the share and Thread results
+    and the fabric line go through the SDK's types (SDK 0.15): the
+    commission deadline is the action's timeoutMs, the share code and QR
+    a Display result, the fabric line two facts instead of an object
+    nobody read.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 15 Sep 2026 14:46:50 +0200
+
 phi-adapter-matter (0.0.10-1) trixie; urgency=medium
 
   * The schema is an AdapterConfigSchema the SDK writes (SDK 0.14): the
