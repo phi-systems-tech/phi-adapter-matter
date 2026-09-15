@@ -1,3 +1,9 @@
+phi-adapter-matter (0.0.12-1) trixie; urgency=medium
+
+  * Built against SDK 0.16: the action kind is gone.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 15 Sep 2026 16:10:39 +0200
+
 phi-adapter-matter (0.0.11-1) trixie; urgency=medium
 
   * Actions, the device menu's confirmation, the share and Thread results

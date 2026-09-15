@@ -1467,7 +1467,6 @@ protected:
         // it. It rides in meta because the SDK forwards meta verbatim: a field
         // of its own would move every adapter's struct without moving the
         // soname.
-        commission.kind = v1::AdapterActionKind::OpenDialog;
         // Derived from the pairer's own deadline rather than written twice;
         // the slack is what the adapter needs to turn its own timeout into an
         // answer before core stops listening.
@@ -1479,7 +1478,6 @@ protected:
         share.label = "Share with another app";
         share.description = "Opens the device for Apple Home, Google Home or the maker's app for five minutes and shows the code to enter there.";
         share.hasForm = true;
-        share.kind = v1::AdapterActionKind::OpenDialog;
         share.loadFormOnOpen = true;
         caps.instanceActions.push_back(share);
 
@@ -1508,7 +1506,6 @@ protected:
         remove.description = "Takes this fabric off the device and forgets it here.";
         remove.hasForm = true;
         remove.danger = true;
-        remove.kind = v1::AdapterActionKind::OpenDialog;
         remove.loadFormOnOpen = true;
         caps.instanceActions.push_back(remove);
 
