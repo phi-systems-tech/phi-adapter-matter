@@ -466,6 +466,12 @@ protected:
 
         phimatter::Callbacks callbacks;
         callbacks.log = [this](phimatter::LogLevel level, const std::string &message) {
+            log(toSdkLevel(level), phi::LogCategory::Protocol, message, {}, "matter.controller");
+        };
+        // The library's own log, which arrives already lowered to Debug and
+        // Trace: visible while this adapter's Logs switch is on, gone when it
+        // is off, and never on top of what the controller said itself.
+        callbacks.chipLog = [this](phimatter::LogLevel level, const std::string &message) {
             log(toSdkLevel(level), phi::LogCategory::Protocol, message, {}, "matter.chip");
         };
         callbacks.attribute = [this](std::uint64_t nodeId, std::uint16_t endpoint, std::uint32_t clusterId,
@@ -1599,10 +1605,9 @@ protected:
         return schema;
     }
 
-    std::unique_ptr<phi::AdapterInstance> createInstance(const phi::ExternalId &externalId) override
+    std::unique_ptr<phi::AdapterInstance> createInstance(const phi::ExternalId &) override
     {
-        log(phi::LogLevel::Info, phi::LogCategory::Lifecycle, "Create Matter instance %1", phi::ScalarList{externalId},
-            "matter.factory.instance.create");
+        // No line here: core says an instance was created, and says it first.
         return std::make_unique<MatterInstance>(m_stateRoot);
     }
 

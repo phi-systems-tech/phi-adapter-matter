@@ -90,7 +90,14 @@ struct AttributeValue {
 };
 
 struct Callbacks {
+    /// What this controller has to say about what it did: a node paired, a
+    /// commissioning that failed, a registry that would not save.
     std::function<void(LogLevel, const std::string &)> log;
+    /// The Matter SDK's own log, passed through. It is the library talking
+    /// about its own attempts, not a statement about ours, so it travels apart
+    /// from the line above and arrives as chatter. Unset means the library is
+    /// silent.
+    std::function<void(LogLevel, const std::string &)> chipLog;
     // A subscribed attribute reported a value.
     std::function<void(std::uint64_t nodeId, std::uint16_t endpoint, std::uint32_t cluster, std::uint32_t attribute,
                        const AttributeValue &value)> attribute;

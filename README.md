@@ -23,6 +23,25 @@ instance name as its label on every node. A rename reaches a device only
 where it lands on the device itself; everything behind a bridge is marked
 `fixedName`.
 
+## Logging
+
+Two voices, and they do not share a channel. What this adapter did is its own:
+a node commissioned or forgotten, a fabric up, a subscription dropped, a node
+gone unreachable - at `Info`, `Warn` or `Error`, and always sent, switch or no
+switch.
+
+CHIP's own log is the other, and it is the library talking about its attempts.
+It arrives one step below the level the SDK gives it: `kLogCategory_Error` as
+`Debug`, progress and detail as `Trace` - which is where chatter belongs.
+A CASE session that timed out and a D-Bus call that failed because
+`bluetooth.service` is masked on this box are not statements about the adapter,
+and the things that do matter, the adapter says itself. So the stream is there
+when the instance's "Logs" switch is on and silent when it is off; turning it
+on also lets those lines past core's journal threshold.
+
+What core says - the process starting, an instance being created, a
+`config.changed` arriving - this adapter does not repeat.
+
 ## Building
 
 The SDK is not built here. `phi-chip-dev` ships connectedhomeip as one static

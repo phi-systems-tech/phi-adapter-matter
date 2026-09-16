@@ -220,24 +220,33 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
 
     static Impl *s_logTarget;
 
+    // The Matter SDK's log, one step below the level it gives itself.
+    //
+    // Even its Error category is a report about its own attempt - a CASE
+    // session that timed out, a D-Bus call that failed because BLE is masked
+    // on this box - and none of that is a statement about the adapter. What an
+    // operator has to see, this controller says itself and at its own level: a
+    // node gone unreachable, a commissioning that failed, attestation refused.
+    // So the whole stream lands where chatter belongs: there when somebody asks
+    // for it, silent when nobody does.
     static void logRedirect(const char *module, std::uint8_t category, const char *msg, va_list args)
     {
         Impl *self = s_logTarget;
-        if (self == nullptr || !self->callbacks.log)
+        if (self == nullptr || !self->callbacks.chipLog)
             return;
         char buffer[512];
         std::vsnprintf(buffer, sizeof(buffer), msg, args);
         LogLevel level = LogLevel::Trace;
         switch (category) {
-        case Logging::kLogCategory_Error: level = LogLevel::Warn; break;
-        case Logging::kLogCategory_Progress: level = LogLevel::Debug; break;
+        case Logging::kLogCategory_Error: level = LogLevel::Debug; break;
+        case Logging::kLogCategory_Progress: level = LogLevel::Trace; break;
         default: level = LogLevel::Trace; break;
         }
         std::string text = "[";
         text += module ? module : "CHIP";
         text += "] ";
         text += buffer;
-        self->callbacks.log(level, text);
+        self->callbacks.chipLog(level, text);
     }
 
     // ---- registry -----------------------------------------------------
