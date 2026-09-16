@@ -1,3 +1,12 @@
+phi-adapter-matter (0.0.14-1) trixie; urgency=medium
+
+  * CHIP's own log lines get a channel of their own, one step below what
+    it gives itself: its errors as Debug, its progress as Trace. BLE
+    being masked here no longer reads as a warning from this adapter,
+    and the Logs switch no longer floods with Avahi debug.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Wed, 16 Sep 2026 16:06:41 +0200
+
 phi-adapter-matter (0.0.13-1) trixie; urgency=medium
 
   * Built against SDK 0.17.
