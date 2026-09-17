@@ -1456,7 +1456,7 @@ protected:
         // SupportsDiscovery without a discovery query is what puts a plugin
         // on the discover page as a manual entry; there is nothing to scan
         // for, the fabric is created on the spot.
-        caps.flags = v1::AdapterFlag::SupportsDiscovery | v1::AdapterFlag::SupportsRename;
+        caps.flags = v1::AdapterFlag::SupportsDiscovery | v1::AdapterFlag::SupportsDeviceRename;
 
         v1::AdapterActionDescriptor commission;
         commission.id = kCommissionAction;
