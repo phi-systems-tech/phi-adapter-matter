@@ -1,3 +1,14 @@
+phi-adapter-matter (0.0.16-1) trixie; urgency=medium
+
+  * SDK 0.21.0 splits AdapterFlag in two: AdapterCapability is what a
+    plugin declares about itself, AdapterOption is what a household
+    answers for one instance (UseTls, EnableLogs). What this adapter
+    states about itself - SupportsDiscovery, SupportsDeviceRename - is
+    the former; bit values are unchanged, only the compiler now tells
+    the two apart.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Thu, 17 Sep 2026 21:48:19 +0200
+
 phi-adapter-matter (0.0.15-1) trixie; urgency=medium
 
   * Says which kind of rename it can carry: AdapterFlag::SupportsRename
