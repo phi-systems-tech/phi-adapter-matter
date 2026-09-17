@@ -1,3 +1,15 @@
+phi-adapter-matter (0.0.15-1) trixie; urgency=medium
+
+  * Says which kind of rename it can carry: AdapterFlag::SupportsRename
+    became four flags, one per kind, and this adapter renames devices -
+    a directly commissioned node's NodeLabel, never an endpoint behind a
+    bridge, which says `fixedName` for itself. It has no rooms, groups or
+    scenes of its own to name. The version is bumped because 0.0.14-1 was
+    installed once with this content already: the number has to move when
+    the package does.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Thu, 17 Sep 2026 21:45:00 +0200
+
 phi-adapter-matter (0.0.14-1) trixie; urgency=medium
 
   * CHIP's own log lines get a channel of their own, one step below what
