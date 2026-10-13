@@ -1,3 +1,13 @@
+phi-adapter-matter (0.0.17-1) trixie; urgency=medium
+
+  * SDK 0.22.0 adds mediaPlayerFeatures to Device, before effects rather
+    than after it, so every offset behind it moves while the soname stays
+    .so.0. Nothing in this adapter has to change and it cannot be left
+    alone either: a sidecar built against the old layout would hand the
+    library an effects list it reads somewhere else. This is that rebuild.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Tue, 13 Oct 2026 16:53:26 +0200
+
 phi-adapter-matter (0.0.16-1) trixie; urgency=medium
 
   * SDK 0.21.0 splits AdapterFlag in two: AdapterCapability is what a
