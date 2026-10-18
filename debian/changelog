@@ -1,3 +1,11 @@
+phi-adapter-matter (0.0.18-1) trixie; urgency=medium
+
+  * After a restore from a backup (core's restore/restored.json), the
+    group data and control counters move forward by 2^20 per day of the
+    backup's age, at least 2^24, once per restore.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sun, 18 Oct 2026 14:15:43 +0200
+
 phi-adapter-matter (0.0.17-1) trixie; urgency=medium
 
   * SDK 0.22.0 adds mediaPlayerFeatures to Device, before effects rather
