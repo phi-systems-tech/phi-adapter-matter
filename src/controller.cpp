@@ -6,6 +6,7 @@
 #include <setup_payload/ManualSetupPayloadGenerator.h>
 #include <setup_payload/QRCodeSetupPayloadGenerator.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -50,6 +51,7 @@
 #include <lib/core/CHIPVendorIdentifiers.hpp>
 #include <lib/core/ErrorStr.h>
 #include <lib/support/CHIPMem.h>
+#include <lib/support/DefaultStorageKeyAllocator.h>
 #include <lib/support/logging/CHIPLogging.h>
 #include <platform/CHIPDeviceLayer.h>
 #include <platform/PlatformManager.h>
@@ -151,6 +153,89 @@ private:
     Callback::Callback<OnNOCChainGeneration> *m_pending = nullptr;
     Callback::Callback<OnNOCChainGeneration> m_bridge;
 };
+
+// After core applied a backup (phi-core docs/backup-concept.md, "An old
+// backup and the frame counters"), the group counters in this state are as
+// old as the backup, and a receiver drops group messages it has seen numbers
+// beyond. Core leaves <dataDir>/restore/restored.json; this finds it above the
+// state directory and says how far to move the counters, once per restore.
+constexpr const char *kRestoreHandledFile = "restore-handled.json";
+
+Json::Value readJsonFile(const std::filesystem::path &path)
+{
+    Json::Value root;
+    std::ifstream in(path);
+    Json::CharReaderBuilder builder;
+    std::string parseError;
+    if (!in || !Json::parseFromStream(builder, in, &root, &parseError) || !root.isObject())
+        return Json::Value(Json::objectValue);
+    return root;
+}
+
+struct RestoreBump {
+    std::int64_t restoredMs = 0;
+    std::uint32_t groupCounters = 0; // 0: nothing to do
+};
+
+RestoreBump pendingRestoreBump(const std::filesystem::path &stateDir)
+{
+    RestoreBump bump;
+    std::filesystem::path dir = stateDir;
+    Json::Value marker;
+    for (int level = 0; level < 5 && !dir.empty(); ++level, dir = dir.parent_path()) {
+        std::error_code ec;
+        if (std::filesystem::exists(dir / "restore" / "restored.json", ec)) {
+            marker = readJsonFile(dir / "restore" / "restored.json");
+            break;
+        }
+        if (dir == dir.parent_path())
+            break;
+    }
+    const std::int64_t restoredMs = marker.get("restoredMs", 0).asInt64();
+    if (restoredMs == 0 || readJsonFile(stateDir / kRestoreHandledFile).get("restoredMs", 0).asInt64() == restoredMs)
+        return bump;
+    // The SDK accepts any jump forward of less than 2^31, so too much costs
+    // nothing and too little is silent: 2^20 per day of the backup's age, at
+    // least 2^24, at most 2^30.
+    const std::int64_t ageMs = std::max<std::int64_t>(0, restoredMs - marker.get("createdMs", 0).asInt64());
+    const std::int64_t days = (ageMs + 86'399'999) / 86'400'000;
+    bump.restoredMs = restoredMs;
+    bump.groupCounters = static_cast<std::uint32_t>(std::clamp<std::int64_t>(days << 20, 1 << 24, 1 << 30));
+    return bump;
+}
+
+bool markRestoreHandled(const std::filesystem::path &stateDir, std::int64_t restoredMs)
+{
+    const std::filesystem::path path = stateDir / kRestoreHandledFile;
+    const std::filesystem::path tmp = path.string() + ".tmp";
+    {
+        std::ofstream out(tmp, std::ios::trunc);
+        out << "{\"restoredMs\": " << restoredMs << "}\n";
+        if (!out.flush())
+            return false;
+    }
+    std::error_code ec;
+    std::filesystem::rename(tmp, path, ec);
+    return !ec;
+}
+
+/// Moves g/gdc and g/gcc forward; a key that is not there yet is left to the
+/// SDK, which starts it at random.
+CHIP_ERROR bumpGroupCounters(PersistentStorageDelegate &storage, std::uint32_t by)
+{
+    for (const StorageKeyName &key :
+         {DefaultStorageKeyAllocator::GroupDataCounter(), DefaultStorageKeyAllocator::GroupControlCounter()}) {
+        std::uint32_t value = 0;
+        std::uint16_t size = sizeof(value);
+        const CHIP_ERROR err = storage.SyncGetKeyValue(key.KeyName(), &value, size);
+        if (err == CHIP_ERROR_PERSISTED_STORAGE_VALUE_NOT_FOUND)
+            continue;
+        ReturnErrorOnFailure(err);
+        value += by; // the counter is compared modulo 2^32
+        ReturnErrorOnFailure(storage.SyncSetKeyValue(key.KeyName(), &value, sizeof(value)));
+    }
+    return CHIP_NO_ERROR;
+}
 
 } // namespace
 
@@ -439,6 +524,14 @@ struct Controller::Impl : public DevicePairingDelegate, public Credentials::Devi
         err = storage.Init("phi", options.stateDir.c_str());
         if (err != CHIP_NO_ERROR)
             return fail("storage init", err);
+        if (const RestoreBump bump = pendingRestoreBump(options.stateDir); bump.restoredMs != 0) {
+            err = bumpGroupCounters(storage, bump.groupCounters);
+            if (err != CHIP_NO_ERROR)
+                return fail("group counters after a restore", err);
+            markRestoreHandled(options.stateDir, bump.restoredMs);
+            log(LogLevel::Info, "restored from a backup: group counters moved forward by "
+                                    + std::to_string(bump.groupCounters));
+        }
         err = operationalKeystore.Init(&storage);
         if (err != CHIP_NO_ERROR)
             return fail("operational keystore init", err);
