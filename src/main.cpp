@@ -1115,8 +1115,11 @@ private:
             summary += " \u00b7 " + thread.summary();
         // The controller lives on this machine; that is the instance's host.
         std::string error;
+        // `thread` is the fact behind the summary's suffix, for a client that
+        // offers "join the Thread network" only where there is one to join.
         if (!sendAdapterMetaUpdated({{"host", v1::ScalarValue(std::string("localhost"))},
-                                     {"summary", v1::ScalarValue(summary)}},
+                                     {"summary", v1::ScalarValue(summary)},
+                                     {"thread", v1::ScalarValue(thread.available && thread.attached())}},
                                     &error)) {
             log(phi::LogLevel::Warn, phi::LogCategory::Internal, "Fabric line not published: %1", phi::ScalarList{error},
                 "matter.fabric.publish.failed");
