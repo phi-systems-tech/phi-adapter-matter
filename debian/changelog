@@ -1,3 +1,9 @@
+phi-adapter-matter (0.0.19-1) trixie; urgency=medium
+
+  * Rebuilt against phi-adapter-sdk 0.24.0 (RoomClass in v1::Room).
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Thu, 22 Oct 2026 19:33:58 +0200
+
 phi-adapter-matter (0.0.18-1) trixie; urgency=medium
 
   * After a restore from a backup (core's restore/restored.json), the
