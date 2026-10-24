@@ -1,3 +1,9 @@
+phi-adapter-matter (0.0.20-1) trixie; urgency=medium
+
+  * Rebuilt against phi-adapter-sdk 0.25.0 (cameraFeatures, voice and camera kinds; ABI)
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sat, 24 Oct 2026 16:55:55 +0200
+
 phi-adapter-matter (0.0.19-1) trixie; urgency=medium
 
   * Rebuilt against phi-adapter-sdk 0.24.0 (RoomClass in v1::Room).
