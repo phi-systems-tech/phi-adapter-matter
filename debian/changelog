@@ -1,3 +1,9 @@
+phi-adapter-matter (0.0.21-1) trixie; urgency=medium
+
+  * Rebuilt against phi-adapter-sdk 0.26.0: accessors instead of fields
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Sun, 25 Oct 2026 11:46:36 +0100
+
 phi-adapter-matter (0.0.20-1) trixie; urgency=medium
 
   * Rebuilt against phi-adapter-sdk 0.25.0 (cameraFeatures, voice and camera kinds; ABI)
