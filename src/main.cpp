@@ -395,13 +395,13 @@ bool parseHexColor(std::string text, double *r, double *g, double *b)
 // in 0..1 or 0..255, the same shapes the other adapters accept.
 bool colorFromRequest(const phi::ChannelInvokeRequest &request, double *r, double *g, double *b)
 {
-    if (request.hasScalarValue) {
-        if (const auto *text = std::get_if<std::string>(&request.value))
+    if (request.hasScalarValue()) {
+        if (const auto *text = std::get_if<std::string>(&request.value()))
             return parseHexColor(*text, r, g, b);
     }
-    if (request.valueJson.empty())
+    if (request.valueJson().empty())
         return false;
-    const Json::Value obj = parseObject(request.valueJson);
+    const Json::Value obj = parseObject(request.valueJson());
     if (obj.isMember("hex"))
         return parseHexColor(obj["hex"].asString(), r, g, b);
     if (!obj.isMember("r") || !obj.isMember("g") || !obj.isMember("b"))
@@ -553,22 +553,22 @@ protected:
     {
         std::uint64_t nodeId = 0;
         std::uint16_t endpoint = 0;
-        if (!parseDeviceExternalId(request.deviceExternalId, &nodeId, &endpoint)) {
-            submit(makeResponse(request.cmdId, v1::CmdStatus::NotSupported, "Unknown Matter device"));
+        if (!parseDeviceExternalId(request.deviceExternalId(), &nodeId, &endpoint)) {
+            submit(makeResponse(request.cmdId(), v1::CmdStatus::NotSupported, "Unknown Matter device"));
             return;
         }
         if (!m_started) {
-            submit(makeResponse(request.cmdId, v1::CmdStatus::TemporarilyOffline, "Matter stack is not running"));
+            submit(makeResponse(request.cmdId(), v1::CmdStatus::TemporarilyOffline, "Matter stack is not running"));
             return;
         }
-        const phi::CmdId cmdId = request.cmdId;
-        const std::string device = request.deviceExternalId;
-        const std::string channel = request.channelExternalId;
+        const phi::CmdId cmdId = request.cmdId();
+        const std::string device = request.deviceExternalId();
+        const std::string channel = request.channelExternalId();
 
         auto finish = [this, cmdId, device, channel](CHIP_ERROR err, v1::ScalarValue applied) {
             if (err == CHIP_NO_ERROR) {
                 v1::CmdResponse resp = makeResponse(cmdId, v1::CmdStatus::Success, {});
-                resp.finalValue = applied;
+                resp.setFinalValue(applied);
                 submit(std::move(resp));
                 sendChannelStateUpdated(device, channel, applied, nowMs());
             } else {
@@ -577,20 +577,20 @@ protected:
         };
 
         if (channel == "onoff") {
-            if (!request.hasScalarValue || !std::holds_alternative<bool>(request.value)) {
+            if (!request.hasScalarValue() || !std::holds_alternative<bool>(request.value())) {
                 submit(makeResponse(cmdId, v1::CmdStatus::InvalidArgument, "OnOff wants a boolean"));
                 return;
             }
-            const bool on = std::get<bool>(request.value);
+            const bool on = std::get<bool>(request.value());
             m_controller.setOnOff(nodeId, endpoint, on, [finish, on](CHIP_ERROR err) { finish(err, v1::ScalarValue(on)); });
             return;
         }
         if (channel == "brightness") {
             double percent = 0.0;
-            if (request.hasScalarValue && std::holds_alternative<double>(request.value))
-                percent = std::get<double>(request.value);
-            else if (request.hasScalarValue && std::holds_alternative<std::int64_t>(request.value))
-                percent = static_cast<double>(std::get<std::int64_t>(request.value));
+            if (request.hasScalarValue() && std::holds_alternative<double>(request.value()))
+                percent = std::get<double>(request.value());
+            else if (request.hasScalarValue() && std::holds_alternative<std::int64_t>(request.value()))
+                percent = static_cast<double>(std::get<std::int64_t>(request.value()));
             else {
                 submit(makeResponse(cmdId, v1::CmdStatus::InvalidArgument, "Brightness wants a number 0..100"));
                 return;
@@ -604,10 +604,10 @@ protected:
         }
         if (channel == kColorTemperatureChannel) {
             double mireds = 0.0;
-            if (request.hasScalarValue && std::holds_alternative<double>(request.value))
-                mireds = std::get<double>(request.value);
-            else if (request.hasScalarValue && std::holds_alternative<std::int64_t>(request.value))
-                mireds = static_cast<double>(std::get<std::int64_t>(request.value));
+            if (request.hasScalarValue() && std::holds_alternative<double>(request.value()))
+                mireds = std::get<double>(request.value());
+            else if (request.hasScalarValue() && std::holds_alternative<std::int64_t>(request.value()))
+                mireds = static_cast<double>(std::get<std::int64_t>(request.value()));
             else {
                 submit(makeResponse(cmdId, v1::CmdStatus::InvalidArgument, "Color temperature wants mireds"));
                 return;
@@ -649,32 +649,32 @@ protected:
     void onAdapterActionInvoke(const phi::AdapterActionInvokeRequest &request) override
     {
         v1::ActionResponse resp;
-        resp.id = request.cmdId;
-        resp.tsMs = nowMs();
+        resp.setId(request.cmdId());
+        resp.setTsMs(nowMs());
 
-        if (request.actionId == kRemoveAction) {
+        if (request.actionId() == kRemoveAction) {
             removeAction(request, std::move(resp));
             return;
         }
-        if (request.actionId == kShareAction) {
+        if (request.actionId() == kShareAction) {
             shareAction(request, std::move(resp));
             return;
         }
-        if (request.actionId == kDeviceDeleteAction) {
+        if (request.actionId() == kDeviceDeleteAction) {
             deviceDeleteAction(request, std::move(resp));
             return;
         }
-        if (request.actionId == kThreadAction) {
+        if (request.actionId() == kThreadAction) {
             threadAction(std::move(resp));
             return;
         }
-        if (request.actionId != kCommissionAction) {
-            resp.status = v1::CmdStatus::NotSupported;
-            resp.error = "Unsupported action";
+        if (request.actionId() != kCommissionAction) {
+            resp.setStatus(v1::CmdStatus::NotSupported);
+            resp.setError("Unsupported action");
             submitAction(std::move(resp));
             return;
         }
-        const Json::Value params = parseObject(request.paramsJson);
+        const Json::Value params = parseObject(request.paramsJson());
         const std::string code = trimmed(params.get(kPairingCodeField, "").asString());
         // The dataset goes along when phi has a network for the device to
         // join; a device without a Thread radio ignores it.
@@ -685,36 +685,35 @@ protected:
                 dataset = phimatter::bytesFromHex(thread.datasetHex);
         }
         if (code.empty()) {
-            resp.status = v1::CmdStatus::InvalidArgument;
-            resp.error = "Enter the device's pairing code first";
+            resp.setStatus(v1::CmdStatus::InvalidArgument);
+            resp.setError("Enter the device's pairing code first");
             submitAction(std::move(resp));
             return;
         }
         if (!m_started) {
-            resp.status = v1::CmdStatus::TemporarilyOffline;
-            resp.error = "Matter stack is not running";
+            resp.setStatus(v1::CmdStatus::TemporarilyOffline);
+            resp.setError("Matter stack is not running");
             submitAction(std::move(resp));
             return;
         }
 
-        const phi::CmdId cmdId = request.cmdId;
+        const phi::CmdId cmdId = request.cmdId();
         m_controller.commission(code, std::move(dataset), [this, cmdId](std::uint64_t nodeId, CHIP_ERROR err) {
             v1::ActionResponse done;
-            done.id = cmdId;
-            done.tsMs = nowMs();
+            done.setId(cmdId);
+            done.setTsMs(nowMs());
             if (err != CHIP_NO_ERROR) {
-                done.status = v1::CmdStatus::Failure;
-                done.error = std::string("Commissioning failed: ") + phimatter::errorText(err);
+                done.setStatus(v1::CmdStatus::Failure);
+                done.setError(std::string("Commissioning failed: ") + phimatter::errorText(err));
                 submitAction(std::move(done));
                 return;
             }
-            done.status = v1::CmdStatus::Success;
-            done.resultType = v1::ActionResultType::String;
+            done.setStatus(v1::CmdStatus::Success);
             char text[64];
             std::snprintf(text, sizeof(text), "Commissioned as node 0x%llx", static_cast<unsigned long long>(nodeId));
-            done.resultValue = v1::ScalarValue(std::string(text));
+            done.setResult(v1::ScalarValue(std::string(text)), v1::ActionResultType::String);
             // The code is single-use; clear it from the form.
-            done.formValues = {{kPairingCodeField, v1::ScalarValue(std::string())}};
+            done.setFormValues({{kPairingCodeField, v1::ScalarValue(std::string())}});
             submitAction(std::move(done));
             adoptNode(nodeId);
         });
@@ -728,22 +727,22 @@ protected:
     {
         std::uint64_t nodeId = 0;
         std::uint16_t endpoint = 0;
-        if (!parseDeviceExternalId(request.deviceExternalId, &nodeId, &endpoint)) {
-            submit(makeResponse(request.cmdId, v1::CmdStatus::NotSupported, "Unknown Matter device"));
+        if (!parseDeviceExternalId(request.deviceExternalId(), &nodeId, &endpoint)) {
+            submit(makeResponse(request.cmdId(), v1::CmdStatus::NotSupported, "Unknown Matter device"));
             return;
         }
-        if (hasFixedName(request.deviceExternalId) || isBridge(nodeId)) {
-            submit(makeResponse(request.cmdId, v1::CmdStatus::NotSupported,
+        if (hasFixedName(request.deviceExternalId()) || isBridge(nodeId)) {
+            submit(makeResponse(request.cmdId(), v1::CmdStatus::NotSupported,
                                 "This device is named by its bridge; rename it in the maker's app"));
             return;
         }
         if (!m_started) {
-            submit(makeResponse(request.cmdId, v1::CmdStatus::TemporarilyOffline, "Matter stack is not running"));
+            submit(makeResponse(request.cmdId(), v1::CmdStatus::TemporarilyOffline, "Matter stack is not running"));
             return;
         }
-        const phi::CmdId cmdId = request.cmdId;
-        const std::string device = request.deviceExternalId;
-        const std::string name = trimmed(request.name).substr(0, 32);
+        const phi::CmdId cmdId = request.cmdId();
+        const std::string device = request.deviceExternalId();
+        const std::string name = trimmed(request.name()).substr(0, 32);
         m_controller.setNodeLabel(nodeId, name, [this, cmdId, device, name](CHIP_ERROR err) {
             if (err != CHIP_NO_ERROR) {
                 submit(makeResponse(cmdId, v1::CmdStatus::Failure,
@@ -763,12 +762,12 @@ protected:
 
     void onDeviceEffectInvoke(const phi::DeviceEffectInvokeRequest &request) override
     {
-        submit(makeResponse(request.cmdId, v1::CmdStatus::NotSupported, "Effects are not supported"));
+        submit(makeResponse(request.cmdId(), v1::CmdStatus::NotSupported, "Effects are not supported"));
     }
 
     void onSceneInvoke(const phi::SceneInvokeRequest &request) override
     {
-        submit(makeResponse(request.cmdId, v1::CmdStatus::NotSupported, "Scenes are not supported"));
+        submit(makeResponse(request.cmdId(), v1::CmdStatus::NotSupported, "Scenes are not supported"));
     }
 
 private:
@@ -776,9 +775,9 @@ private:
     {
         if (!hasConfig())
             return;
-        const Json::Value meta = parseObject(config().adapter.metaJson);
+        const Json::Value meta = parseObject(config().adapter().metaJson());
         m_allowUntrusted = meta.get(kAllowUntrustedField, false).asBool();
-        const std::string name = trimmed(config().adapter.name);
+        const std::string name = trimmed(config().adapter().name());
         m_fabricLabel = name.empty() ? kDefaultFabricLabel : name.substr(0, 32);
         const int port = meta.get(kListenPortField, 0).asInt();
         m_listenPort = (port > 0 && port < 65536) ? static_cast<std::uint16_t>(port) : 0;
@@ -810,23 +809,23 @@ private:
     bool nodeFromForm(const phi::AdapterActionInvokeRequest &request, const char *field, v1::ActionResponse &resp,
                       std::uint64_t *nodeId)
     {
-        const Json::Value params = parseObject(request.paramsJson);
+        const Json::Value params = parseObject(request.paramsJson());
         if (!parseNodeReference(params.get(field, "").asString(), nodeId)) {
-            resp.status = v1::CmdStatus::InvalidArgument;
-            resp.error = "Name the node: its id (0x1) or one of its devices (n1-e3)";
+            resp.setStatus(v1::CmdStatus::InvalidArgument);
+            resp.setError("Name the node: its id (0x1) or one of its devices (n1-e3)");
             submitAction(std::move(resp));
             return false;
         }
         if (!m_started) {
-            resp.status = v1::CmdStatus::TemporarilyOffline;
-            resp.error = "Matter stack is not running";
+            resp.setStatus(v1::CmdStatus::TemporarilyOffline);
+            resp.setError("Matter stack is not running");
             submitAction(std::move(resp));
             return false;
         }
         const auto known = m_controller.nodes();
         if (std::find(known.begin(), known.end(), *nodeId) == known.end()) {
-            resp.status = v1::CmdStatus::InvalidArgument;
-            resp.error = "Node " + nodeText(*nodeId) + " is not in this fabric";
+            resp.setStatus(v1::CmdStatus::InvalidArgument);
+            resp.setError("Node " + nodeText(*nodeId) + " is not in this fabric");
             submitAction(std::move(resp));
             return false;
         }
@@ -840,26 +839,24 @@ private:
         std::uint64_t nodeId = 0;
         if (!nodeFromForm(request, kShareDeviceField, resp, &nodeId))
             return;
-        const phi::CmdId cmdId = request.cmdId;
+        const phi::CmdId cmdId = request.cmdId();
         m_controller.share(nodeId, kShareWindowSeconds, [this, cmdId, nodeId](const std::string &manual, const std::string &qr, CHIP_ERROR err) {
             v1::ActionResponse done;
-            done.id = cmdId;
-            done.tsMs = nowMs();
+            done.setId(cmdId);
+            done.setTsMs(nowMs());
             if (err != CHIP_NO_ERROR) {
-                done.status = v1::CmdStatus::Failure;
-                done.error = "Could not open the commissioning window on node " + nodeText(nodeId) + ": " + phimatter::errorText(err);
+                done.setStatus(v1::CmdStatus::Failure);
+                done.setError("Could not open the commissioning window on node " + nodeText(nodeId) + ": " + phimatter::errorText(err));
                 submitAction(std::move(done));
                 return;
             }
-            done.status = v1::CmdStatus::Success;
+            done.setStatus(v1::CmdStatus::Success);
             // A result the UI can show as more than a sentence: the code to
             // type, and the QR payload to scan, beside the text.
-            done.resultType = v1::ActionResultType::Display;
-            done.display.text = "Node " + nodeText(nodeId) + " is open for " + std::to_string(kShareWindowSeconds / 60)
-                + " minutes. Scan the code with the other app, or enter the pairing code there.";
-            done.display.code = manual;
-            done.display.qr = qr;
-            done.formValues = {{kShareDeviceField, v1::ScalarValue(std::string())}};
+            done.setDisplay({"Node " + nodeText(nodeId) + " is open for " + std::to_string(kShareWindowSeconds / 60)
+                                 + " minutes. Scan the code with the other app, or enter the pairing code there.",
+                             manual, qr});
+            done.setFormValues({{kShareDeviceField, v1::ScalarValue(std::string())}});
             submitAction(std::move(done));
         });
     }
@@ -871,7 +868,7 @@ private:
         std::uint64_t nodeId = 0;
         if (!nodeFromForm(request, kRemoveDeviceField, resp, &nodeId))
             return;
-        removeNode(nodeId, request.cmdId, kRemoveDeviceField);
+        removeNode(nodeId, request.cmdId(), kRemoveDeviceField);
     }
 
     // The device menu's Delete: the node behind the device leaves the fabric.
@@ -884,8 +881,8 @@ private:
     {
         const phimatter::ThreadNetwork thread = threadNetwork();
         if (!thread.available) {
-            resp.status = v1::CmdStatus::TemporarilyOffline;
-            resp.error = "No Thread border router is running here (" + thread.error + "); plug in the Thread radio";
+            resp.setStatus(v1::CmdStatus::TemporarilyOffline);
+            resp.setError("No Thread border router is running here (" + thread.error + "); plug in the Thread radio");
             submitAction(std::move(resp));
             return;
         }
@@ -896,45 +893,43 @@ private:
         if (!thread.extPanId.empty())
             text += ", extended PAN " + thread.extPanId;
         text += ". The code is the active operational dataset with the network key: paste it into a controller that is to commission devices into this network.";
-        resp.status = v1::CmdStatus::Success;
-        resp.resultType = v1::ActionResultType::Display;
-        resp.display.text = text;
-        resp.display.code = thread.datasetHex;
+        resp.setStatus(v1::CmdStatus::Success);
+        resp.setDisplay({text, thread.datasetHex});
         submitAction(std::move(resp));
     }
 
     void deviceDeleteAction(const phi::AdapterActionInvokeRequest &request, v1::ActionResponse resp)
     {
-        const Json::Value params = parseObject(request.paramsJson);
+        const Json::Value params = parseObject(request.paramsJson());
         const std::string device = trimmed(params.get("externalId", "").asString());
         std::uint64_t nodeId = 0;
         std::uint16_t endpoint = 0;
         if (!parseDeviceExternalId(device, &nodeId, &endpoint)) {
-            resp.status = v1::CmdStatus::InvalidArgument;
-            resp.error = "Unknown Matter device";
+            resp.setStatus(v1::CmdStatus::InvalidArgument);
+            resp.setError("Unknown Matter device");
             submitAction(std::move(resp));
             return;
         }
         if (endpoint != 0 && isBridge(nodeId)) {
-            resp.status = v1::CmdStatus::NotSupported;
-            resp.error = "This device belongs to its bridge; remove the bridge, or the device in the maker's app";
+            resp.setStatus(v1::CmdStatus::NotSupported);
+            resp.setError("This device belongs to its bridge; remove the bridge, or the device in the maker's app");
             submitAction(std::move(resp));
             return;
         }
         if (!m_started) {
-            resp.status = v1::CmdStatus::TemporarilyOffline;
-            resp.error = "Matter stack is not running";
+            resp.setStatus(v1::CmdStatus::TemporarilyOffline);
+            resp.setError("Matter stack is not running");
             submitAction(std::move(resp));
             return;
         }
         const auto known = m_controller.nodes();
         if (std::find(known.begin(), known.end(), nodeId) == known.end()) {
-            resp.status = v1::CmdStatus::InvalidArgument;
-            resp.error = "Node " + nodeText(nodeId) + " is not in this fabric";
+            resp.setStatus(v1::CmdStatus::InvalidArgument);
+            resp.setError("Node " + nodeText(nodeId) + " is not in this fabric");
             submitAction(std::move(resp));
             return;
         }
-        removeNode(nodeId, request.cmdId, nullptr);
+        removeNode(nodeId, request.cmdId(), nullptr);
     }
 
     // Takes the node out of the fabric and its devices out of core; answers
@@ -952,20 +947,20 @@ private:
             dropNode(nodeId);
 
             v1::ActionResponse done;
-            done.id = cmdId;
-            done.tsMs = nowMs();
-            done.status = v1::CmdStatus::Success;
-            done.resultType = v1::ActionResultType::String;
+            done.setId(cmdId);
+            done.setTsMs(nowMs());
+            done.setStatus(v1::CmdStatus::Success);
+            done.setResultType(v1::ActionResultType::String);
             if (err == CHIP_NO_ERROR) {
-                done.resultValue = v1::ScalarValue("Removed node " + nodeText(nodeId));
+                done.setResultValue(v1::ScalarValue("Removed node " + nodeText(nodeId)));
             } else {
                 // Forgotten here regardless; the device keeps a fabric it
                 // cannot use until somebody resets it.
-                done.resultValue = v1::ScalarValue("Node " + nodeText(nodeId) + " forgotten; the device did not let go of the fabric ("
-                                                   + phimatter::errorText(err) + "), a factory reset clears it");
+                done.setResultValue(v1::ScalarValue("Node " + nodeText(nodeId) + " forgotten; the device did not let go of the fabric ("
+                                                   + phimatter::errorText(err) + "), a factory reset clears it"));
             }
             if (formField)
-                done.formValues = {{formField, v1::ScalarValue(std::string())}};
+                done.setFormValues({{formField, v1::ScalarValue(std::string())}});
             submitAction(std::move(done));
         });
     }
@@ -1081,11 +1076,11 @@ private:
     // Answers a dialog that is only opening: the choices, nothing done.
     bool answeredWithChoices(const phi::AdapterActionInvokeRequest &request, const char *field, v1::ActionResponse &resp)
     {
-        const Json::Value params = parseObject(request.paramsJson);
+        const Json::Value params = parseObject(request.paramsJson());
         if (params.isMember(field) && !trimmed(params[field].asString()).empty())
             return false;
-        resp.status = v1::CmdStatus::Success;
-        resp.fieldChoices = nodeChoices(field);
+        resp.setStatus(v1::CmdStatus::Success);
+        resp.setFieldChoices(nodeChoices(field));
         submitAction(std::move(resp));
         return true;
     }
@@ -1095,11 +1090,11 @@ private:
     static v1::Channel connectivityChannel()
     {
         v1::Channel channel;
-        channel.externalId = kConnectivityChannel;
-        channel.name = "Connectivity";
-        channel.kind = v1::ChannelKind::ConnectivityStatus;
-        channel.dataType = v1::ChannelDataType::Enum;
-        channel.flags = v1::ChannelFlag::Readable | v1::ChannelFlag::Reportable | v1::ChannelFlag::Retained;
+        channel.setExternalId(kConnectivityChannel)
+            .setName("Connectivity")
+            .setKind(v1::ChannelKind::ConnectivityStatus)
+            .setDataType(v1::ChannelDataType::Enum)
+            .setFlags(v1::ChannelFlag::Readable | v1::ChannelFlag::Reportable | v1::ChannelFlag::Retained);
         return channel;
     }
 
@@ -1239,23 +1234,23 @@ private:
         });
         if (publishable == 0 || aggregator) {
             v1::Device gateway;
-            gateway.externalId = deviceExternalId(info.nodeId, 0);
-            gateway.deviceClass = v1::DeviceClass::Gateway;
-            gateway.manufacturer = info.vendor;
-            gateway.model = info.product;
-            gateway.firmware = info.software;
-            gateway.name = nodeName.empty() ? gateway.externalId : nodeName;
-            if (const std::string given = m_controller.deviceName(gateway.externalId); !given.empty())
-                gateway.name = given;
+            gateway.setExternalId(deviceExternalId(info.nodeId, 0))
+                .setDeviceClass(v1::DeviceClass::Gateway)
+                .setManufacturer(info.vendor)
+                .setModel(info.product)
+                .setFirmware(info.software);
+            gateway.setName(nodeName.empty() ? gateway.externalId() : nodeName);
+            if (const std::string given = m_controller.deviceName(gateway.externalId()); !given.empty())
+                gateway.setName(given);
             char nodeText[32];
             std::snprintf(nodeText, sizeof(nodeText), "0x%llx", static_cast<unsigned long long>(info.nodeId));
-            gateway.metaJson = std::string("{\"kind\":\"matter\",\"nodeId\":\"") + nodeText + "\",\"endpoint\":0"
-                + (aggregator ? ",\"fixedName\":true" : "") + "}";
-            rememberDevice(info.nodeId, gateway.externalId, aggregator);
+            gateway.setMetaJson(std::string("{\"kind\":\"matter\",\"nodeId\":\"") + nodeText + "\",\"endpoint\":0"
+                + (aggregator ? ",\"fixedName\":true" : "") + "}");
+            rememberDevice(info.nodeId, gateway.externalId(), aggregator);
             std::string error;
             if (!sendDeviceUpdated(gateway, {connectivityChannel()}, &error)) {
                 log(phi::LogLevel::Error, phi::LogCategory::Internal, "Failed to publish %1: %2",
-                    phi::ScalarList{gateway.externalId, error}, "matter.device.publish.failed");
+                    phi::ScalarList{gateway.externalId(), error}, "matter.device.publish.failed");
             } else {
                 ++published;
             }
@@ -1267,23 +1262,23 @@ private:
                 continue;
 
             v1::Device device;
-            device.externalId = deviceExternalId(info.nodeId, ep.endpoint);
-            device.deviceClass = deviceClassFor(ep.deviceTypes);
-            device.manufacturer = !ep.vendor.empty() ? ep.vendor : info.vendor;
-            device.model = !ep.product.empty() ? ep.product : info.product;
-            device.firmware = info.software;
-            device.flags = v1::DeviceFlag::Wireless;
+            device.setExternalId(deviceExternalId(info.nodeId, ep.endpoint))
+                .setDeviceClass(deviceClassFor(ep.deviceTypes))
+                .setManufacturer(!ep.vendor.empty() ? ep.vendor : info.vendor)
+                .setModel(!ep.product.empty() ? ep.product : info.product)
+                .setFirmware(info.software)
+                .setFlags(v1::DeviceFlag::Wireless);
             if (!ep.label.empty()) {
-                device.name = ep.label;
+                device.setName(ep.label);
             } else if (publishable > 1) {
-                device.name = nodeName + " " + std::to_string(ep.endpoint);
+                device.setName(nodeName + " " + std::to_string(ep.endpoint));
             } else {
-                device.name = nodeName;
+                device.setName(nodeName);
             }
-            if (device.name.empty())
-                device.name = device.externalId;
-            if (const std::string given = m_controller.deviceName(device.externalId); !given.empty())
-                device.name = given;
+            if (device.name().empty())
+                device.setName(device.externalId());
+            if (const std::string given = m_controller.deviceName(device.externalId()); !given.empty())
+                device.setName(given);
 
             Json::Value meta(Json::objectValue);
             meta["kind"] = "matter";
@@ -1307,39 +1302,37 @@ private:
                 meta["parent"] = deviceExternalId(info.nodeId, 0);
             Json::StreamWriterBuilder builder;
             builder["indentation"] = "";
-            device.metaJson = Json::writeString(builder, meta);
+            device.setMetaJson(Json::writeString(builder, meta));
 
             v1::ChannelList channels;
             for (const ChannelSpec &spec : specs) {
                 v1::Channel channel;
-                channel.externalId = spec.id;
-                channel.name = channelName(spec);
-                channel.kind = spec.kind;
-                channel.dataType = spec.dataType;
-                channel.flags = spec.flags;
-                channel.unit = spec.unit;
-                channel.minValue = spec.minValue;
-                channel.maxValue = spec.maxValue;
-                channel.stepValue = spec.stepValue;
+                channel.setExternalId(spec.id)
+                    .setName(channelName(spec))
+                    .setKind(spec.kind)
+                    .setDataType(spec.dataType)
+                    .setFlags(spec.flags)
+                    .setUnit(spec.unit)
+                    .setRange(spec.minValue, spec.maxValue, spec.stepValue);
                 channels.push_back(channel);
                 if (spec.kind == v1::ChannelKind::Battery)
-                    device.flags = device.flags | v1::DeviceFlag::Battery;
+                    device.setFlags(device.flags() | v1::DeviceFlag::Battery);
             }
             channels.push_back(connectivityChannel());
             {
                 std::lock_guard<std::mutex> lock(m_specsMutex);
-                m_specs[device.externalId] = specs;
-                m_devicesByNode[info.nodeId].insert(device.externalId);
+                m_specs[device.externalId()] = specs;
+                m_devicesByNode[info.nodeId].insert(device.externalId());
                 if (fixedName)
-                    m_fixedNames.insert(device.externalId);
+                    m_fixedNames.insert(device.externalId());
                 else
-                    m_fixedNames.erase(device.externalId);
+                    m_fixedNames.erase(device.externalId());
             }
 
             std::string error;
             if (!sendDeviceUpdated(device, channels, &error)) {
                 log(phi::LogLevel::Error, phi::LogCategory::Internal, "Failed to publish %1: %2",
-                    phi::ScalarList{device.externalId, error}, "matter.device.publish.failed");
+                    phi::ScalarList{device.externalId(), error}, "matter.device.publish.failed");
             } else {
                 ++published;
             }
@@ -1386,10 +1379,10 @@ private:
     static v1::CmdResponse makeResponse(phi::CmdId cmdId, v1::CmdStatus status, std::string error)
     {
         v1::CmdResponse resp;
-        resp.id = cmdId;
-        resp.status = status;
-        resp.error = std::move(error);
-        resp.tsMs = nowMs();
+        resp.setId(cmdId);
+        resp.setStatus(status);
+        resp.setError(std::move(error));
+        resp.setTsMs(nowMs());
         return resp;
     }
 
@@ -1454,20 +1447,17 @@ protected:
     phi::AdapterCapabilities capabilities() const override
     {
         phi::AdapterCapabilities caps;
-        caps.required = v1::AdapterRequirement::None;
-        caps.optional = v1::AdapterRequirement::None;
+        caps.setRequired(v1::AdapterRequirement::None).setOptional(v1::AdapterRequirement::None);
         // SupportsDiscovery without a discovery query is what puts a plugin
         // on the discover page as a manual entry; there is nothing to scan
         // for, the fabric is created on the spot.
-        caps.flags = v1::AdapterCapability::SupportsDiscovery | v1::AdapterCapability::SupportsDeviceRename;
+        caps.setFlags(v1::AdapterCapability::SupportsDiscovery | v1::AdapterCapability::SupportsDeviceRename);
 
-        v1::AdapterActionDescriptor commission;
-        commission.id = kCommissionAction;
-        commission.label = "Commission device";
-        commission.description = "Adds the device behind the pairing code to this fabric.";
+        v1::AdapterActionDescriptor commission(kCommissionAction, "Commission device",
+                                          "Adds the device behind the pairing code to this fabric.");
         // A dialog with the fields bound to this action by parentActionId;
         // the UI sends their values as the action's params.
-        commission.hasForm = true;
+        commission.setHasForm(true);
         // timeoutMs: core answers in this adapter's place once its own
         // deadline passes, and 10 seconds - the figure for ordinary traffic -
         // is a fraction of what commissioning takes. The verdict that matters
@@ -1479,44 +1469,32 @@ protected:
         // Derived from the pairer's own deadline rather than written twice;
         // the slack is what the adapter needs to turn its own timeout into an
         // answer before core stops listening.
-        commission.timeoutMs = (phimatter::kCommissioningDeadlineSeconds + 10) * 1000;
-        caps.instanceActions.push_back(commission);
+        commission.setTimeoutMs((phimatter::kCommissioningDeadlineSeconds + 10) * 1000);
+        caps.addInstanceAction(commission);
 
-        v1::AdapterActionDescriptor share;
-        share.id = kShareAction;
-        share.label = "Share with another app";
-        share.description = "Opens the device for Apple Home, Google Home or the maker's app for five minutes and shows the code to enter there.";
-        share.hasForm = true;
-        share.loadFormOnOpen = true;
-        caps.instanceActions.push_back(share);
+        v1::AdapterActionDescriptor share(kShareAction, "Share with another app",
+                                          "Opens the device for Apple Home, Google Home or the maker's app for five minutes and shows the code to enter there.");
+        share.setHasForm(true).setLoadFormOnOpen(true);
+        caps.addInstanceAction(share);
 
-        v1::AdapterActionDescriptor thread;
-        thread.id = kThreadAction;
-        thread.label = "Thread network";
-        thread.description = "The network phi's own border router runs, and its dataset for other controllers.";
-        caps.instanceActions.push_back(thread);
+        v1::AdapterActionDescriptor thread(kThreadAction, "Thread network",
+                                          "The network phi's own border router runs, and its dataset for other controllers.");
+        caps.addInstanceAction(thread);
 
         // The device menu's Delete, by the name the UI looks for. Placed on
         // the device, never in the card.
-        v1::AdapterActionDescriptor deviceDelete;
-        deviceDelete.id = kDeviceDeleteAction;
-        deviceDelete.label = "Remove from fabric";
-        deviceDelete.description = "Takes this fabric off the device's node and forgets it. A bridge goes with everything behind it.";
-        deviceDelete.danger = true;
-        deviceDelete.placement = v1::AdapterActionPlacement::Device;
-        deviceDelete.confirm = {"Remove from fabric?",
+        v1::AdapterActionDescriptor deviceDelete(kDeviceDeleteAction, "Remove from fabric",
+                                          "Takes this fabric off the device's node and forgets it. A bridge goes with everything behind it.");
+        deviceDelete.setDanger(true).setPlacement(v1::AdapterActionPlacement::Device);
+        deviceDelete.setConfirm({"Remove from fabric?",
                                 "The node leaves this fabric; a bridge takes every device behind it along. Continue?",
-                                "Remove", "Cancel"};
-        caps.instanceActions.push_back(deviceDelete);
+                                "Remove", "Cancel"});
+        caps.addInstanceAction(deviceDelete);
 
-        v1::AdapterActionDescriptor remove;
-        remove.id = kRemoveAction;
-        remove.label = "Remove device";
-        remove.description = "Takes this fabric off the device and forgets it here.";
-        remove.hasForm = true;
-        remove.danger = true;
-        remove.loadFormOnOpen = true;
-        caps.instanceActions.push_back(remove);
+        v1::AdapterActionDescriptor remove(kRemoveAction, "Remove device",
+                                          "Takes this fabric off the device and forgets it here.");
+        remove.setHasForm(true).setDanger(true).setLoadFormOnOpen(true);
+        caps.addInstanceAction(remove);
 
         return caps;
     }
@@ -1526,85 +1504,79 @@ protected:
         using Type = v1::AdapterConfigFieldType;
         using Flag = v1::AdapterConfigFieldFlag;
         auto field = [](const char *key, Type type, const char *label, const char *description) {
-            v1::AdapterConfigField out;
-            out.key = key;
-            out.type = type;
-            out.label = label;
-            out.description = description;
-            return out;
+            return v1::AdapterConfigField(key, type, label).setDescription(description);
         };
 
         v1::AdapterConfigSchema schema;
-        schema.factory.title = "Matter";
-        schema.factory.description = "A Matter controller with a fabric of its own. Nothing to configure here; add an "
-                                     "instance and commission devices there.";
+        schema.factory()
+            .setTitle("Matter")
+            .setDescription("A Matter controller with a fabric of its own. Nothing to configure here; add an "
+                            "instance and commission devices there.");
 
-        v1::AdapterConfigSection &instance = schema.instance;
-        instance.title = "Matter fabric";
-        instance.description = "Devices join this fabric with their pairing code: the 11-digit manual code or the text "
-                               "behind the QR code (MT:...). A device already on the network is reached directly; a "
-                               "fresh one is commissioned over Bluetooth when a dongle is set in settings.";
+        v1::AdapterConfigSection &instance = schema.instance();
+        instance.setTitle("Matter fabric");
+        instance.setDescription("Devices join this fabric with their pairing code: the 11-digit manual code or the text "
+                                "behind the QR code (MT:...). A device already on the network is reached directly; a "
+                                "fresh one is commissioned over Bluetooth when a dongle is set in settings.");
         // The instance settings: two columns, the long labels given room.
-        instance.layout.width = v1::AdapterConfigSize::Wide;
-        instance.layout.columns = 2;
-        instance.layout.labelWidth = v1::AdapterConfigSize::Wide;
+        instance.layout().setWidth(v1::AdapterConfigSize::Wide).setColumns(2).setLabelWidth(v1::AdapterConfigSize::Wide);
 
         v1::AdapterConfigField pairingCode =
             field(kPairingCodeField, Type::String, "Pairing code",
                   "The code printed on the device or shown by its maker's app (Hue: Settings, Smart home, Matter). "
                   "Either the 11-digit manual code or the text behind the QR code.");
-        pairingCode.placeholder = "MT:... or 3497-011-2332";
-        pairingCode.flags = Flag::Required | Flag::Transient;
-        pairingCode.parentActionId = kCommissionAction;
+        pairingCode.setPlaceholder("MT:... or 3497-011-2332");
+        pairingCode.setFlags(Flag::Required | Flag::Transient);
+        pairingCode.setParentActionId(kCommissionAction);
         v1::AdapterConfigField joinThread =
             field(kJoinThreadField, Type::Boolean, "Join phi's Thread network",
                   "A device with a Thread radio joins the network phi's own border router runs. Off, it is left on "
                   "whatever network its maker's app put it on.");
-        joinThread.defaultValue = true;
-        joinThread.flags = Flag::Transient;
-        joinThread.parentActionId = kCommissionAction;
+        joinThread.setDefaultValue(true);
+        joinThread.setFlags(Flag::Transient);
+        joinThread.setParentActionId(kCommissionAction);
         v1::AdapterConfigField shareDevice =
             field(kShareDeviceField, Type::Select, "Device to share",
                   "The other app adds the device with the code this shows; it stays in this fabric too.");
-        shareDevice.flags = Flag::Required | Flag::Transient;
-        shareDevice.parentActionId = kShareAction;
+        shareDevice.setFlags(Flag::Required | Flag::Transient);
+        shareDevice.setParentActionId(kShareAction);
         v1::AdapterConfigField removeDevice =
             field(kRemoveDeviceField, Type::Select, "Device to remove", "A bridge goes with everything behind it.");
-        removeDevice.flags = Flag::Required | Flag::Transient;
-        removeDevice.parentActionId = kRemoveAction;
+        removeDevice.setFlags(Flag::Required | Flag::Transient);
+        removeDevice.setParentActionId(kRemoveAction);
 
         v1::AdapterConfigField allowUntrusted =
             field(kAllowUntrustedField, Type::Boolean, "Allow uncertified devices",
                   "Continue commissioning when the device's attestation certificate is not signed by a known Matter "
                   "PAA. Needed for sample apps and development boards.");
-        allowUntrusted.defaultValue = false;
+        allowUntrusted.setDefaultValue(false);
         v1::AdapterConfigField bleAdapter =
             field(kBleAdapterField, Type::Integer, "Bluetooth adapter",
                   "HCI index of the Bluetooth controller used to commission a device that is not yet on any network "
                   "(hci0 is 0). Leave at -1 to disable Bluetooth: only devices already on the network can then be "
                   "added. Takes effect when the instance restarts.");
-        bleAdapter.defaultValue = std::int64_t{-1};
-        bleAdapter.minValue = -1;
-        bleAdapter.maxValue = 15;
-        bleAdapter.layout.controlWidth = v1::AdapterConfigSize::Narrow;
+        bleAdapter.setDefaultValue(std::int64_t{-1});
+        bleAdapter.setMinValue(-1);
+        bleAdapter.setMaxValue(15);
+        bleAdapter.layout().setControlWidth(v1::AdapterConfigSize::Narrow);
         v1::AdapterConfigField listenPort =
             field(kListenPortField, Type::Integer, "UDP port",
                   "The port this controller answers on. Matter's default is 5540; a second core on the same host needs "
                   "another one. Takes effect when the instance restarts.");
-        listenPort.defaultValue = std::int64_t{5540};
-        listenPort.minValue = 1024;
-        listenPort.maxValue = 65535;
-        listenPort.layout.controlWidth = v1::AdapterConfigSize::Narrow;
+        listenPort.setDefaultValue(std::int64_t{5540});
+        listenPort.setMinValue(1024);
+        listenPort.setMaxValue(65535);
+        listenPort.layout().setControlWidth(v1::AdapterConfigSize::Narrow);
         v1::AdapterConfigField threadSocket =
             field(kThreadSocketField, Type::String, "Border router console",
                   "otbr-agent's console socket, where phi's own Thread network is read from. Leave it unless the "
                   "Thread interface is not wpan0.");
-        threadSocket.defaultValue = v1::Utf8String("/run/openthread-wpan0.sock");
-        threadSocket.placeholder = "/run/openthread-wpan0.sock";
-        threadSocket.layout.cells = 2;
+        threadSocket.setDefaultValue(v1::Utf8String("/run/openthread-wpan0.sock"));
+        threadSocket.setPlaceholder("/run/openthread-wpan0.sock");
+        threadSocket.layout().setCells(2);
 
-        instance.fields = {pairingCode, joinThread, shareDevice, removeDevice,
-                           allowUntrusted, bleAdapter, listenPort, threadSocket};
+        instance.setFields({pairingCode, joinThread, shareDevice, removeDevice,
+                            allowUntrusted, bleAdapter, listenPort, threadSocket});
         return schema;
     }
 
@@ -1634,7 +1606,6 @@ int main(int argc, char **argv)
     phi::SidecarHost host(socketPath, factory);
 
     phi::SidecarMainOptions options;
-    options.installSignalHandlers = false;
-    options.keepRunning = []() { return g_running.load(); };
+    options.setInstallSignalHandlers(false).setKeepRunning([]() { return g_running.load(); });
     return phi::runSidecarMain(host, options);
 }
