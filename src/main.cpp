@@ -36,8 +36,6 @@ namespace {
 
 constexpr const char kPluginType[] = "matter";
 constexpr const char kDisplayName[] = "Matter";
-constexpr const char kCommissionAction[] = "commission";
-constexpr const char kPairingCodeField[] = "pairingCode";
 constexpr const char kRemoveAction[] = "remove";
 constexpr const char kShareAction[] = "share";
 constexpr const char kDeviceDeleteAction[] = "device.delete";
@@ -49,7 +47,6 @@ constexpr const char kAllowUntrustedField[] = "allowUntrustedAttestation";
 // phi's own Thread border router, read through otbr-agent's console socket.
 constexpr const char kThreadAction[] = "thread";
 constexpr const char kThreadSocketField[] = "threadSocket";
-constexpr const char kJoinThreadField[] = "joinThread";
 constexpr const char kDefaultThreadSocket[] = "/run/openthread-wpan0.sock";
 constexpr const char kListenPortField[] = "listenPort";
 constexpr const char kBleAdapterField[] = "bleAdapter";
@@ -668,53 +665,38 @@ protected:
             threadAction(std::move(resp));
             return;
         }
-        if (request.actionId() != kCommissionAction) {
-            resp.setStatus(v1::CmdStatus::NotSupported);
-            resp.setError("Unsupported action");
-            submitAction(std::move(resp));
+        resp.setStatus(v1::CmdStatus::NotSupported);
+        resp.setError("Unsupported action");
+        submitAction(std::move(resp));
+    }
+
+    // "Add" with a code: the household scanned or typed the device's Matter
+    // code. Answered as soon as the commissioning has started; how it ends
+    // follows as pairing progress, Done once the node's devices are out.
+    void onSetupCode(const phi::SetupCodeRequest &request) override
+    {
+        if (!m_started) {
+            sendResult(v1::CmdResponse::failure(request.cmdId(), v1::CmdStatus::TemporarilyOffline,
+                                                "Matter stack is not running").setTsMs(nowMs()));
             return;
         }
-        const Json::Value params = parseObject(request.paramsJson());
-        const std::string code = trimmed(params.get(kPairingCodeField, "").asString());
         // The dataset goes along when phi has a network for the device to
         // join; a device without a Thread radio ignores it.
         std::vector<std::uint8_t> dataset;
-        if (params.get(kJoinThreadField, true).asBool()) {
-            const phimatter::ThreadNetwork thread = threadNetwork();
-            if (thread.available && thread.attached())
-                dataset = phimatter::bytesFromHex(thread.datasetHex);
-        }
-        if (code.empty()) {
-            resp.setStatus(v1::CmdStatus::InvalidArgument);
-            resp.setError("Enter the device's pairing code first");
-            submitAction(std::move(resp));
-            return;
-        }
-        if (!m_started) {
-            resp.setStatus(v1::CmdStatus::TemporarilyOffline);
-            resp.setError("Matter stack is not running");
-            submitAction(std::move(resp));
-            return;
-        }
-
-        const phi::CmdId cmdId = request.cmdId();
-        m_controller.commission(code, std::move(dataset), [this, cmdId](std::uint64_t nodeId, CHIP_ERROR err) {
-            v1::ActionResponse done;
-            done.setId(cmdId);
-            done.setTsMs(nowMs());
+        const phimatter::ThreadNetwork thread = threadNetwork();
+        if (thread.available && thread.attached())
+            dataset = phimatter::bytesFromHex(thread.datasetHex);
+        sendResult(v1::CmdResponse::success(request.cmdId()).setTsMs(nowMs()));
+        const std::string pairingId = request.pairingId();
+        sendPairingProgress(pairingId, v1::PairingStage::Running, 10, "Commissioning");
+        m_controller.commission(request.code(), std::move(dataset), [this, pairingId](std::uint64_t nodeId, CHIP_ERROR err) {
             if (err != CHIP_NO_ERROR) {
-                done.setStatus(v1::CmdStatus::Failure);
-                done.setError(std::string("Commissioning failed: ") + phimatter::errorText(err));
-                submitAction(std::move(done));
+                sendPairingProgress(pairingId, v1::PairingStage::Failed, 100,
+                                    std::string("Commissioning failed: ") + phimatter::errorText(err));
                 return;
             }
-            done.setStatus(v1::CmdStatus::Success);
-            char text[64];
-            std::snprintf(text, sizeof(text), "Commissioned as node 0x%llx", static_cast<unsigned long long>(nodeId));
-            done.setResult(v1::ScalarValue(std::string(text)), v1::ActionResultType::String);
-            // The code is single-use; clear it from the form.
-            done.setFormValues({{kPairingCodeField, v1::ScalarValue(std::string())}});
-            submitAction(std::move(done));
+            sendPairingProgress(pairingId, v1::PairingStage::Running, 70, "Reading the device");
+            m_pairingByNode[nodeId] = pairingId;
             adoptNode(nodeId);
         });
     }
@@ -1140,6 +1122,21 @@ private:
 
     // Reads a node's structure and publishes what it carries as devices,
     // subscribes, and makes sure the node knows this fabric's label.
+    // Ends the pairing that brought this node, if one did: Done naming its
+    // first device, or Failed with why.
+    void finishPairing(std::uint64_t nodeId, const std::string &deviceExternalId, const std::string &failure)
+    {
+        const auto it = m_pairingByNode.find(nodeId);
+        if (it == m_pairingByNode.end())
+            return;
+        const std::string pairingId = it->second;
+        m_pairingByNode.erase(it);
+        if (deviceExternalId.empty())
+            sendPairingProgress(pairingId, v1::PairingStage::Failed, 100, failure);
+        else
+            sendPairingProgress(pairingId, v1::PairingStage::Done, 100, "Commissioned", deviceExternalId);
+    }
+
     void adoptNode(std::uint64_t nodeId)
     {
         describeAndPublish(nodeId, true);
@@ -1157,6 +1154,7 @@ private:
                 std::snprintf(text, sizeof(text), "node 0x%llx: cannot read its structure: %s",
                               static_cast<unsigned long long>(info.nodeId), phimatter::errorText(err));
                 log(phi::LogLevel::Warn, phi::LogCategory::Device, text, {}, "matter.node.describe.failed");
+                finishPairing(info.nodeId, {}, text);
                 return;
             }
             publishNode(info);
@@ -1198,6 +1196,7 @@ private:
 
         const std::string nodeName = !info.label.empty() ? info.label : info.product;
         std::size_t published = 0;
+        std::string firstPublished;
         {
             // For the pick lists: maker and model, which is how the box on
             // the shelf is known, plus the node's own label when it says
@@ -1253,6 +1252,8 @@ private:
                     phi::ScalarList{gateway.externalId(), error}, "matter.device.publish.failed");
             } else {
                 ++published;
+                if (firstPublished.empty())
+                    firstPublished = gateway.externalId();
             }
         }
 
@@ -1335,8 +1336,11 @@ private:
                     phi::ScalarList{device.externalId(), error}, "matter.device.publish.failed");
             } else {
                 ++published;
+                if (firstPublished.empty())
+                    firstPublished = device.externalId();
             }
         }
+        finishPairing(info.nodeId, firstPublished, "The device published nothing");
 
         char text[160];
         std::snprintf(text, sizeof(text), "node 0x%llx (%s / %s): %zu endpoints, %zu devices published",
@@ -1413,6 +1417,7 @@ private:
     std::map<std::uint64_t, std::set<std::string>> m_devicesByNode;
     std::map<std::uint64_t, std::string> m_nodeNames;
     std::map<std::uint64_t, std::string> m_nodeAddresses;
+    std::map<std::uint64_t, std::string> m_pairingByNode; // node commissioned by "Add" -> pairingId
     std::set<std::uint64_t> m_bridgeNodes;
     std::set<std::string> m_fixedNames;
     std::uint16_t m_listenPort = 0;
@@ -1452,25 +1457,10 @@ protected:
         // on the discover page as a manual entry; there is nothing to scan
         // for, the fabric is created on the spot.
         caps.setFlags(v1::AdapterCapability::SupportsDiscovery | v1::AdapterCapability::SupportsDeviceRename);
+        caps.setTopologies(v1::Topology::Local)
+            .setPairingStyles(v1::PairingStyle::SetupCode)
+            .setSetupCodeSchemes(v1::SetupCodeScheme::MatterQr | v1::SetupCodeScheme::MatterManual);
 
-        v1::AdapterActionDescriptor commission(kCommissionAction, "Commission device",
-                                          "Adds the device behind the pairing code to this fabric.");
-        // A dialog with the fields bound to this action by parentActionId;
-        // the UI sends their values as the action's params.
-        commission.setHasForm(true);
-        // timeoutMs: core answers in this adapter's place once its own
-        // deadline passes, and 10 seconds - the figure for ordinary traffic -
-        // is a fraction of what commissioning takes. The verdict that matters
-        // is the adapter's, which says whether a device answered at all, so
-        // the patience declared here outlasts the attempt rather than matching
-        // it. It rides in meta because the SDK forwards meta verbatim: a field
-        // of its own would move every adapter's struct without moving the
-        // soname.
-        // Derived from the pairer's own deadline rather than written twice;
-        // the slack is what the adapter needs to turn its own timeout into an
-        // answer before core stops listening.
-        commission.setTimeoutMs((phimatter::kCommissioningDeadlineSeconds + 10) * 1000);
-        caps.addInstanceAction(commission);
 
         v1::AdapterActionDescriptor share(kShareAction, "Share with another app",
                                           "Opens the device for Apple Home, Google Home or the maker's app for five minutes and shows the code to enter there.");
@@ -1515,26 +1505,12 @@ protected:
 
         v1::AdapterConfigSection &instance = schema.instance();
         instance.setTitle("Matter fabric");
-        instance.setDescription("Devices join this fabric with their pairing code: the 11-digit manual code or the text "
-                                "behind the QR code (MT:...). A device already on the network is reached directly; a "
-                                "fresh one is commissioned over Bluetooth when a dongle is set in settings.");
+        instance.setDescription("Devices join this fabric through Add with their pairing code: the 11-digit manual code "
+                                "or the text behind the QR code (MT:...). A device already on the network is reached "
+                                "directly; a fresh one is commissioned over Bluetooth when a dongle is set in settings.");
         // The instance settings: two columns, the long labels given room.
         instance.layout().setWidth(v1::AdapterConfigSize::Wide).setColumns(2).setLabelWidth(v1::AdapterConfigSize::Wide);
 
-        v1::AdapterConfigField pairingCode =
-            field(kPairingCodeField, Type::String, "Pairing code",
-                  "The code printed on the device or shown by its maker's app (Hue: Settings, Smart home, Matter). "
-                  "Either the 11-digit manual code or the text behind the QR code.");
-        pairingCode.setPlaceholder("MT:... or 3497-011-2332");
-        pairingCode.setFlags(Flag::Required | Flag::Transient);
-        pairingCode.setParentActionId(kCommissionAction);
-        v1::AdapterConfigField joinThread =
-            field(kJoinThreadField, Type::Boolean, "Join phi's Thread network",
-                  "A device with a Thread radio joins the network phi's own border router runs. Off, it is left on "
-                  "whatever network its maker's app put it on.");
-        joinThread.setDefaultValue(true);
-        joinThread.setFlags(Flag::Transient);
-        joinThread.setParentActionId(kCommissionAction);
         v1::AdapterConfigField shareDevice =
             field(kShareDeviceField, Type::Select, "Device to share",
                   "The other app adds the device with the code this shows; it stays in this fabric too.");
@@ -1575,7 +1551,7 @@ protected:
         threadSocket.setPlaceholder("/run/openthread-wpan0.sock");
         threadSocket.layout().setCells(2);
 
-        instance.setFields({pairingCode, joinThread, shareDevice, removeDevice,
+        instance.setFields({shareDevice, removeDevice,
                             allowUntrusted, bleAdapter, listenPort, threadSocket});
         return schema;
     }
