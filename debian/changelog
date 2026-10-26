@@ -1,3 +1,9 @@
+phi-adapter-matter (0.0.22-1) trixie; urgency=medium
+
+  * Rebuild against SDK 0.28.0
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Mon, 26 Oct 2026 18:26:01 +0100
+
 phi-adapter-matter (0.0.21-1) trixie; urgency=medium
 
   * Rebuilt against phi-adapter-sdk 0.26.0: accessors instead of fields
