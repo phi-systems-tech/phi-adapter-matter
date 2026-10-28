@@ -1,3 +1,9 @@
+phi-adapter-matter (0.0.24-1) trixie; urgency=medium
+
+  * Contact: Boolean State TRUE is closed, phi's true is open.
+
+ -- Marius Schumacher <marius.schumacher@phisys.com>  Wed, 28 Oct 2026 12:44:44 +0100
+
 phi-adapter-matter (0.0.23-1) trixie; urgency=medium
 
   * Rebuilt against phi-adapter-sdk 0.29.0 (network clients).
