@@ -301,8 +301,11 @@ v1::ScalarValue channelValue(const ChannelSpec &spec, const phimatter::Attribute
     switch (spec.kind) {
     case v1::ChannelKind::PowerOnOff:
     case v1::ChannelKind::Motion:
-    case v1::ChannelKind::Contact:
         return v1::ScalarValue(value.boolean);
+    case v1::ChannelKind::Contact:
+        // Boolean State is TRUE while the contact is made, i.e. closed; phi's
+        // Contact is true while open.
+        return v1::ScalarValue(!value.boolean);
     case v1::ChannelKind::Brightness:
         return v1::ScalarValue(std::round(value.number / 254.0 * 1000.0) / 10.0);
     case v1::ChannelKind::Battery:
